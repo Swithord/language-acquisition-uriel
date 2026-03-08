@@ -1,0 +1,303 @@
+---
+title: "preprocess_data"
+author: "Aditya Khan"
+date: "2026-03-08"
+output: pdf_document
+---
+
+```{r}
+
+library(data.table)
+
+```
+
+
+```{r}
+
+stex <- read.csv("data/stex.csv")
+toefl <- read.csv("data/toefl_scores_by_native_language.csv")
+setDT(stex)
+setDT(toefl)
+
+```
+
+
+```{r}
+
+fix_lang <- function(x) {
+  x <- enc2utf8(x)
+
+  x[x %chin% c("\xc9w\xe9", "Éwé", "Ewe")] <- "Ewe"
+  x[x == "Byelorussian"] <- "Belarusian"
+  x[x == "Portugese"] <- "Portuguese"
+  x[x == "Ukranian"] <- "Ukrainian"
+  x[x == "Tigrigna"] <- "Tigrinya"
+
+  x
+}
+
+lang_lookup <- data.table(
+  lang = c(
+    "Ewe","Afrikaans","Albanian","Amharic","Arabic","Armenian","Azerbaijani",
+    "Bengali","Bosnian","Bulgarian","Belarusian","Catalan","Chinese","Croatian",
+    "Czech","Danish","Dutch","English","Estonian","Finnish","French","Fulani",
+    "Georgian","German","Greek","Haitian","Hebrew","Hindi","Hungarian","Icelandic",
+    "Igbo","Indonesian","Italian","Japanese","Javanese","Kinyarwanda","Korean",
+    "Kurdish","Latvian","Lithuanian","Malay","Malayalam","Mongolian","Monolingual",
+    "Nepali","Norwegian","Papiamentu","Pashto","Persian","Polish","Portuguese",
+    "Romanian","Romansch","Rundi","Russian","Serbian","Slovak","Slovenian",
+    "Somali","Spanish","Swahili","Swedish","Tagalog","Tamazight","Tamil","Thai",
+    "Tigrinya","Turkish","Ukrainian","Urdu","Vietnamese","Wolof","Yoruba"
+  ),
+  glottocode = c(
+    "ewee1241","afri1274","alba1267","amha1245","arab1395","nucl1235","azer1255",
+    "beng1280","bosn1245","bulg1262","bela1254","stan1289","mand1415","croa1245",
+    "czec1258","dani1285","dutc1256","stan1293","esto1258","finn1318","stan1290","fula1264",
+    "nucl1302","stan1295","mode1248","hait1244","hebr1245","hind1269","hung1274","icel1247",
+    "nucl1417","indo1316","ital1282","nucl1643","java1254","kiny1244","kore1280",
+    "kurd1259","latv1249","lith1251","stan1306","mala1464","mong1331",NA_character_,
+    "nepa1254","norw1258","papi1253","pash1269","cent2390","poli1260","port1283",
+    "roma1327","roma1326","rund1242","russ1263","serb1264","slov1269","slov1268",
+    "soma1255","stan1288","swah1253","swed1254","taga1270","cent2194","tami1289","thai1261",
+    "tigr1271","nucl1301","ukra1253","urdu1245","viet1252","nucl1347","yoru1245"
+  )
+)
+
+stex[, `:=`(
+  L1_std = fix_lang(L1),
+  L2_std = fix_lang(L2)
+)]
+
+stex[lang_lookup, L1_code := i.glottocode, on = c(L1_std = "lang")]
+stex[lang_lookup, L2_code := i.glottocode, on = c(L2_std = "lang")]
+
+stex[, c("L1_std", "L2_std") := NULL]
+
+```
+
+
+```{r}
+
+angular_distance <- function(u, v, distance_metric = "angular") {
+  if (length(u) != length(v)) {
+    stop("Vectors must be of the same length")
+  }
+
+  u <- as.numeric(u)
+  v <- as.numeric(v)
+
+  if (sqrt(sum(u^2)) == 0) {
+    u <- rep(1e-10, length(u))
+  }
+  if (sqrt(sum(v^2)) == 0) {
+    v <- rep(1e-10, length(v))
+  }
+
+  norm_u <- u / sqrt(sum(u^2))
+  norm_v <- v / sqrt(sum(v^2))
+
+  cos_theta <- sum(norm_u * norm_v)
+  cos_theta <- max(-1.0, min(1.0, cos_theta))
+
+  if (distance_metric == "cosine") {
+    return(round(1 - cos_theta, 4))
+  }
+
+  angular_distance <- 2 * acos(cos_theta)
+  angular_distance <- angular_distance / pi
+
+  round(angular_distance, 4)
+}
+
+pair_distance <- function(code1, code2, lookup, distance_metric = "angular") {
+  if (is.na(code1) || is.na(code2)) return(NA_real_)
+  if (!(code1 %in% names(lookup)) || !(code2 %in% names(lookup))) return(NA_real_)
+
+  u <- lookup[[code1]]
+  v <- lookup[[code2]]
+
+  keep <- !is.na(u) & !is.na(v)
+  if (!any(keep)) return(NA_real_)
+
+  u <- u[keep]
+  v <- v[keep]
+
+  if (length(u) == 0 || length(v) == 0) return(NA_real_)
+
+  angular_distance(u, v, distance_metric = distance_metric)
+}
+
+pair_distance_vec <- function(code1, code2, lookup, distance_metric = "angular") {
+  mapply(
+    FUN = function(a, b) pair_distance(a, b, lookup, distance_metric = distance_metric),
+    code1, code2,
+    USE.NAMES = FALSE
+  )
+}
+
+```
+
+
+```{r}
+feat_dir <- "data/Data/Data/without_glottolog_with_lineage"
+
+features_dt <- fread(file.path(feat_dir, "features.csv"))
+family_dt <- fread(file.path(feat_dir, "family_features.csv"))
+geo_dt <- fread(file.path(feat_dir, "geocoord_features.csv"))
+script_dt <- fread(file.path(feat_dir, "script_features.csv"))
+
+```
+
+```{r}
+
+coerce_feature_numeric <- function(dt) {
+  feat_cols <- setdiff(names(dt), "lang")
+  for (j in feat_cols) {
+    set(dt, j = j, value = as.numeric(dt[[j]]))
+  }
+  dt
+}
+
+features_dt <- coerce_feature_numeric(features_dt)
+family_dt <- coerce_feature_numeric(family_dt)
+geo_dt <- coerce_feature_numeric(geo_dt)
+script_dt <- coerce_feature_numeric(script_dt)
+
+```
+
+
+```{r}
+
+all_feat_cols <- setdiff(names(features_dt), "lang")
+syn_cols <- grep("^S_", all_feat_cols, value = TRUE)
+morph_cols <- grep("^M_", all_feat_cols, value = TRUE)
+phon_cols <- grep("^P_", all_feat_cols, value = TRUE)
+inv_cols <- grep("^INV_", all_feat_cols, value = TRUE)
+
+cat("features:", length(all_feat_cols), "\n")
+cat("syntactic:", length(syn_cols), "\n")
+cat("morphological:", length(morph_cols), "\n")
+cat("phonological:", length(phon_cols), "\n")
+cat("inventory:", length(inv_cols), "\n")
+
+```
+```{r}
+
+make_vector_lookup <- function(dt, cols) {
+  x <- dt[, c("lang", cols), with = FALSE]
+  split_vals <- split(x, x$lang)
+
+  out <- lapply(split_vals, function(z) {
+    as.numeric(z[1, ..cols])
+  })
+  out
+}
+
+feat_lookup <- make_vector_lookup(features_dt, all_feat_cols)
+syn_lookup <- make_vector_lookup(features_dt, syn_cols)
+morph_lookup <- make_vector_lookup(features_dt, morph_cols)
+phon_lookup <- make_vector_lookup(features_dt, phon_cols)
+inv_lookup <- make_vector_lookup(features_dt, inv_cols)
+
+gen_lookup <- make_vector_lookup(family_dt, setdiff(names(family_dt), "lang"))
+geo_lookup <- make_vector_lookup(geo_dt, setdiff(names(geo_dt), "lang"))
+script_lookup <- make_vector_lookup(script_dt, setdiff(names(script_dt), "lang"))
+
+```
+
+
+```{r}
+
+stex_pairs <- unique(
+  stex[, .(
+    code1 = pmin(L1_code, L2_code),
+    code2 = pmax(L1_code, L2_code)
+  )]
+)
+
+stex_pairs[, featural_dist := pair_distance_vec(code1, code2, feat_lookup)]
+stex_pairs[, script_dist := pair_distance_vec(code1, code2, script_lookup)]
+stex_pairs[, geographic_dist := pair_distance_vec(code1, code2, geo_lookup)]
+stex_pairs[, genetic_dist := pair_distance_vec(code1, code2, gen_lookup)]
+stex_pairs[, syntactic_dist := pair_distance_vec(code1, code2, syn_lookup)]
+stex_pairs[, morphological_dist := pair_distance_vec(code1, code2, morph_lookup)]
+stex_pairs[, phonological_dist := pair_distance_vec(code1, code2, phon_lookup)]
+stex_pairs[, inventory_dist := pair_distance_vec(code1, code2, inv_lookup)]
+
+stex[, `:=`(
+  code1 = pmin(L1_code, L2_code),
+  code2 = pmax(L1_code, L2_code)
+)]
+
+stex[stex_pairs, on = .(code1, code2), `:=`(
+  featural_dist = i.featural_dist,
+  script_dist = i.script_dist,
+  geographic_dist = i.geographic_dist,
+  genetic_dist = i.genetic_dist,
+  syntactic_dist = i.syntactic_dist,
+  morphological_dist = i.morphological_dist,
+  phonological_dist = i.phonological_dist,
+  inventory_dist = i.inventory_dist
+)]
+
+stex[, c("code1", "code2") := NULL]
+
+```
+
+
+```{r}
+
+english_code <- "stan1293"
+
+toefl[, L1_code := code]
+toefl[, L2_code := english_code]
+
+toefl[, featural_dist := pair_distance_vec(L1_code, L2_code, feat_lookup)]
+toefl[, script_dist := pair_distance_vec(L1_code, L2_code, script_lookup)]
+toefl[, geographic_dist := pair_distance_vec(L1_code, L2_code, geo_lookup)]
+toefl[, genetic_dist := pair_distance_vec(L1_code, L2_code, gen_lookup)]
+toefl[, syntactic_dist := pair_distance_vec(L1_code, L2_code, syn_lookup)]
+toefl[, morphological_dist := pair_distance_vec(L1_code, L2_code, morph_lookup)]
+toefl[, phonological_dist := pair_distance_vec(L1_code, L2_code, phon_lookup)]
+toefl[, inventory_dist := pair_distance_vec(L1_code, L2_code, inv_lookup)]
+
+```
+
+
+```{r}
+
+stex[, .(
+  n = .N,
+  missing_feat = sum(is.na(featural_dist)),
+  missing_script = sum(is.na(script_dist)),
+  missing_geo = sum(is.na(geographic_dist)),
+  missing_gen = sum(is.na(genetic_dist))
+)]
+
+toefl[, .(
+  n = .N,
+  missing_feat = sum(is.na(featural_dist)),
+  missing_script = sum(is.na(script_dist)),
+  missing_geo = sum(is.na(geographic_dist)),
+  missing_gen = sum(is.na(genetic_dist))
+)]
+
+```
+
+```{r}
+
+fwrite(stex, "data/stex_with_uriel_distances.csv")
+fwrite(toefl, "data/toefl_with_uriel_distances.csv")
+
+```
+
+
+TODO:
+- Think about what to do with Pashto
+- Add stuff from [here](https://databank.worldbank.org/source/world-development-indicators/), maybe IT.NET.USER.ZS, NY.GDP.PCAP.PP.KD, SE.TER.ENRR, SE.XPD.TOTL.GD.ZS, SE.ADT.LITR.ZS, SP.URB.TOTL.IN.ZS, SM.POP.TOTL.ZS
+- Add stuff from [here](https://hdr.undp.org/data-center/human-development-index#/indicies/HDI)
+- Probably do the above only for stex
+- For toefl and stex, download [ASJP](https://asjp.clld.org/) so we can use their distances as a competitor
+- I thought about including walks/phoible based distances, but could get away with not, since they are included in uriel
+
+

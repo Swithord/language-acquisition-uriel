@@ -15,7 +15,40 @@ n_cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset =
 if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
 
 data.table::setDTthreads(1L)
-fixest::setFixest_nthreads(1L)
+fixest::setFixest_nthreads(n_cores)
+
+glmnet_inner_folds_default <- suppressWarnings(as.integer(Sys.getenv("GLMNET_INNER_FOLDS", unset = "5")))
+if (is.na(glmnet_inner_folds_default) || glmnet_inner_folds_default < 3L) {
+  glmnet_inner_folds_default <- 5L
+}
+
+glmnet_nlambda_default <- suppressWarnings(as.integer(Sys.getenv("GLMNET_NLAMBDA", unset = "50")))
+if (is.na(glmnet_nlambda_default) || glmnet_nlambda_default < 20L) {
+  glmnet_nlambda_default <- 50L
+}
+
+stex_outer_v <- suppressWarnings(as.integer(Sys.getenv("STEX_OUTER_V", unset = "5")))
+if (is.na(stex_outer_v) || stex_outer_v < 2L) {
+  stex_outer_v <- 5L
+}
+
+stex_outer_repeats <- suppressWarnings(as.integer(Sys.getenv("STEX_OUTER_REPEATS", unset = "3")))
+if (is.na(stex_outer_repeats) || stex_outer_repeats < 1L) {
+  stex_outer_repeats <- 3L
+}
+
+write_partial_dt <- function(dt, csv_name, rdata_name) {
+  fwrite(dt, file.path(out_dir, "tables", csv_name))
+  save(dt, file = file.path(out_dir, "rdata", rdata_name), compress = "xz")
+}
+
+plapply <- function(X, FUN, ..., mc.cores = n_cores) {
+  if (.Platform$OS.type == "unix" && mc.cores > 1L) {
+    parallel::mclapply(X, FUN, ..., mc.cores = mc.cores)
+  } else {
+    lapply(X, FUN, ...)
+  }
+}
 
 out_dir <- Sys.getenv("OUTPUT_DIR", unset = "artifacts/results_uriel")
 data_dir <- Sys.getenv("DATA_DIR", unset = "data")
@@ -23,6 +56,7 @@ data_dir <- Sys.getenv("DATA_DIR", unset = "data")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(out_dir, "plots"), showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(out_dir, "tables"), showWarnings = FALSE, recursive = TRUE)
+dir.create(file.path(out_dir, "rdata"), showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(out_dir, "rdata"), showWarnings = FALSE, recursive = TRUE)
 
 stex  <- fread(file.path(data_dir, "stex_with_uriel_distances.csv"))
@@ -203,14 +237,15 @@ tidy_lm <- function(fit, dataset, outcome, model_name, model_block) {
   td
 }
 
-tidy_fixest <- function(fit, dataset, outcome, model_name, model_block, family_name) {
-  td <- as.data.table(broom::tidy(fit, conf.int = TRUE))
+tidy_fixest <- function(fit, dataset, outcome, model_name, model_block, family_name, conf_int = FALSE, vcov_type = NA_character_) {
+  td <- as.data.table(broom::tidy(fit, conf.int = conf_int))
   td[, `:=`(
     dataset = dataset,
     outcome = outcome,
     model_name = model_name,
     model_block = model_block,
     family_name = family_name,
+    vcov_type = vcov_type,
     n = nobs(fit),
     AIC = suppressWarnings(tryCatch(AIC(fit), error = function(e) NA_real_)),
     BIC = suppressWarnings(tryCatch(BIC(fit), error = function(e) NA_real_))
@@ -245,6 +280,7 @@ evaluate_glmnet_cv <- function(data, outcome, specs, folds, family = c("gaussian
         x_test  <- x_mat[fd$test,  , drop = FALSE]
 
         inner_folds <- min(glmnet_inner_folds_default, length(y_train))
+
         if (inner_folds < 3L || ncol(x_train) == 0L || length(unique(y_train)) <= 1L) {
           pred <- fallback_pred
         } else {
@@ -525,11 +561,35 @@ run_stex_model <- function(dat, outcome, dist_var, family_type = c("gaussian", "
   )
 
   if (family_type == "gaussian") {
-    fit <- feols(fml, data = dat, cluster = ~pair_id)
-    td <- tidy_fixest(fit, dataset = "stex", outcome = outcome, model_name = model_name, model_block = model_block, family_name = "gaussian")
+    fit <- feols(fml, data = dat, cluster = ~pair_id, nthreads = n_cores)
+    td <- tidy_fixest(
+      fit,
+      dataset = "stex",
+      outcome = outcome,
+      model_name = model_name,
+      model_block = model_block,
+      family_name = "gaussian",
+      conf_int = TRUE,
+      vcov_type = "cluster_pair_id"
+    )
   } else {
-    fit <- fenegbin(fml, data = dat, cluster = ~pair_id)
-    td <- tidy_fixest(fit, dataset = "stex", outcome = outcome, model_name = model_name, model_block = model_block, family_name = "negbin")
+    fit <- fenegbin(
+      fml,
+      data = dat,
+      nthreads = n_cores,
+      notes = FALSE,
+      warn = TRUE
+    )
+    td <- tidy_fixest(
+      fit,
+      dataset = "stex",
+      outcome = outcome,
+      model_name = model_name,
+      model_block = model_block,
+      family_name = "negbin",
+      conf_int = FALSE,
+      vcov_type = "iid"
+    )
   }
 
   td
@@ -551,11 +611,35 @@ run_stex_block_model <- function(dat, outcome, block = c("mechanistic", "all8"),
   )
 
   if (family_type == "gaussian") {
-    fit <- feols(fml, data = dat, cluster = ~pair_id)
-    td <- tidy_fixest(fit, dataset = "stex", outcome = outcome, model_name = paste0(outcome, "__", block), model_block = paste0(block, "_block"), family_name = "gaussian")
+    fit <- feols(fml, data = dat, cluster = ~pair_id, nthreads = n_cores)
+    td <- tidy_fixest(
+      fit,
+      dataset = "stex",
+      outcome = outcome,
+      model_name = paste0(outcome, "__", block),
+      model_block = paste0(block, "_block"),
+      family_name = "gaussian",
+      conf_int = TRUE,
+      vcov_type = "cluster_pair_id"
+    )
   } else {
-    fit <- fenegbin(fml, data = dat, cluster = ~pair_id)
-    td <- tidy_fixest(fit, dataset = "stex", outcome = outcome, model_name = paste0(outcome, "__", block), model_block = paste0(block, "_block"), family_name = "negbin")
+    fit <- fenegbin(
+      fml,
+      data = dat,
+      nthreads = n_cores,
+      notes = FALSE,
+      warn = TRUE
+    )
+    td <- tidy_fixest(
+      fit,
+      dataset = "stex",
+      outcome = outcome,
+      model_name = paste0(outcome, "__", block),
+      model_block = paste0(block, "_block"),
+      family_name = "negbin",
+      conf_int = FALSE,
+      vcov_type = "iid"
+    )
   }
 
   td
@@ -563,40 +647,51 @@ run_stex_block_model <- function(dat, outcome, block = c("mechanistic", "all8"),
 
 stex_inf_list <- list()
 
-stex_inf_list[[length(stex_inf_list) + 1L]] <- rbindlist(
+append_stex_inf <- function(x) {
+  stex_inf_list[[length(stex_inf_list) + 1L]] <<- x
+  tmp <- rbindlist(stex_inf_list, use.names = TRUE, fill = TRUE)
+  write_partial_dt(
+    tmp,
+    "05_stex_inferential_results.partial.csv",
+    "05_stex_inferential_results.partial.RData"
+  )
+  invisible(NULL)
+}
+
+append_stex_inf(rbindlist(
   lapply(distance_vars, function(d) run_stex_model(stex_main, "Speaking", d, family_type = "gaussian", interaction = FALSE)),
   use.names = TRUE, fill = TRUE
-)
+))
 
-stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(stex_main, "Speaking", block = "mechanistic", family_type = "gaussian")
-stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(stex_main, "Speaking", block = "all8", family_type = "gaussian")
+append_stex_inf(run_stex_block_model(stex_main, "Speaking", block = "mechanistic", family_type = "gaussian"))
+append_stex_inf(run_stex_block_model(stex_main, "Speaking", block = "all8", family_type = "gaussian"))
 
-stex_inf_list[[length(stex_inf_list) + 1L]] <- rbindlist(
+append_stex_inf(rbindlist(
   lapply(distance_vars, function(d) run_stex_model(stex_main, "Speaking", d, family_type = "gaussian", interaction = TRUE)),
   use.names = TRUE, fill = TRUE
-)
+))
 
 for (y in c("new_feat", "new_sounds")) {
   dat_y <- copy(stex_main[!is.na(get(y))])
 
-  stex_inf_list[[length(stex_inf_list) + 1L]] <- rbindlist(
+  append_stex_inf(rbindlist(
     lapply(distance_vars, function(d) run_stex_model(dat_y, y, d, family_type = "negbin", interaction = FALSE)),
     use.names = TRUE, fill = TRUE
-  )
+  ))
 
-  stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(dat_y, y, block = "mechanistic", family_type = "negbin")
-  stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(dat_y, y, block = "all8", family_type = "negbin")
+  append_stex_inf(run_stex_block_model(dat_y, y, block = "mechanistic", family_type = "negbin"))
+  append_stex_inf(run_stex_block_model(dat_y, y, block = "all8", family_type = "negbin"))
 }
 
 for (y in stex_secondary_gaussian) {
   dat_y <- copy(stex_main[!is.na(get(y))])
   if (nrow(dat_y) >= 200) {
-    stex_inf_list[[length(stex_inf_list) + 1L]] <- rbindlist(
+    append_stex_inf(rbindlist(
       lapply(distance_vars, function(d) run_stex_model(dat_y, y, d, family_type = "gaussian", interaction = FALSE)),
       use.names = TRUE, fill = TRUE
-    )
-    stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(dat_y, y, block = "mechanistic", family_type = "gaussian")
-    stex_inf_list[[length(stex_inf_list) + 1L]] <- run_stex_block_model(dat_y, y, block = "all8", family_type = "gaussian")
+    ))
+    append_stex_inf(run_stex_block_model(dat_y, y, block = "mechanistic", family_type = "gaussian"))
+    append_stex_inf(run_stex_block_model(dat_y, y, block = "all8", family_type = "gaussian"))
   }
 }
 
@@ -604,6 +699,7 @@ stex_inf <- rbindlist(stex_inf_list, use.names = TRUE, fill = TRUE)
 stex_inf[term != "(Intercept)", p_adj_fdr := p.adjust(p.value, method = "fdr"), by = .(outcome, model_block)]
 
 fwrite(stex_inf, file.path(out_dir, "tables", "05_stex_inferential_results.csv"))
+save(stex_inf, file = file.path(out_dir, "rdata", "05_stex_inferential_results.RData"), compress = "xz")
 
 p_stex_coef <- coef_forest_plot(
   stex_inf[
@@ -765,10 +861,10 @@ run_stex_predictive <- function(dat, outcome, family = c("gaussian", "poisson"))
   dat_use <- copy(dat[complete.cases(dat[, ..vars_needed])])
 
   schemes <- list(
-    pair_id = make_group_vfolds(dat_use$pair_id, v = 10, repeats = 5, seed = 2024),
-    L1_code = make_leave_one_group_folds(dat_use$L1_code),
-    L2_code = make_leave_one_group_folds(dat_use$L2_code)
-  )
+    pair_id = make_group_vfolds(dat_use$pair_id, v = stex_outer_v, repeats = stex_outer_repeats, seed = 2024),
+    L1_code = make_group_vfolds(dat_use$L1_code, v = min(5L, length(unique(dat_use$L1_code))), repeats = 1L, seed = 2025),
+    L2_code = make_group_vfolds(dat_use$L2_code, v = min(5L, length(unique(dat_use$L2_code))), repeats = 1L, seed = 2026)
+    )
 
   res_all <- list()
 
@@ -822,6 +918,9 @@ stex_pred_summary <- stex_pred_fold[, .(
   mean_poisson_dev = mean(poisson_dev, na.rm = TRUE),
   sd_poisson_dev   = sd(poisson_dev, na.rm = TRUE)
 ), by = .(dataset, outcome, scheme, model_name)]
+
+save(toefl_pred_fold, toefl_pred_summary, file = file.path(out_dir, "rdata", "08_toefl_predictive_artifacts.RData"), compress = "xz")
+save(stex_pred_fold, stex_pred_summary, file = file.path(out_dir, "rdata", "10_stex_predictive_artifacts.RData"), compress = "xz")
 
 fwrite(stex_pred_fold,    file.path(out_dir, "tables", "09_stex_predictive_fold_metrics.csv"))
 fwrite(stex_pred_summary, file.path(out_dir, "tables", "10_stex_predictive_summary.csv"))

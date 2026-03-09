@@ -24,8 +24,10 @@ export R_LIBS_USER="$SLURM_SUBMIT_DIR/rlib"
 export OUTPUT_DIR="$SLURM_SUBMIT_DIR/artifacts/results_uriel"
 export DATA_DIR="$SLURM_SUBMIT_DIR/data"
 
-export GLMNET_INNER_FOLDS=10
-export GLMNET_NLAMBDA=100
+export GLMNET_INNER_FOLDS=5
+export GLMNET_NLAMBDA=50
+export STEX_OUTER_V=5
+export STEX_OUTER_REPEATS=3
 
 module --force purge
 module load StdEnv/2023

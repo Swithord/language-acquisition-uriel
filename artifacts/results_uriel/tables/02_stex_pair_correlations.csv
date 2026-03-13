@@ -1,0 +1,9 @@
+dataset,outcome,distance,cor
+stex,Speaking,featural_dist,-0.0635388452120049
+stex,Speaking,script_dist,-0.148375143949179
+stex,Speaking,geographic_dist,-0.181346790776714
+stex,Speaking,genetic_dist,-0.0717540009698062
+stex,Speaking,syntactic_dist,-0.0998876913136853
+stex,Speaking,morphological_dist,-0.0463747336427184
+stex,Speaking,phonological_dist,-0.038600900254223
+stex,Speaking,inventory_dist,-0.0168342642744093

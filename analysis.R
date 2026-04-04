@@ -19,7 +19,10 @@ n_cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset =
 if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
 
 data.table::setDTthreads(1L)
-fixest::setFixest_nthreads(n_cores)
+
+# fixest is currently only permitting 1 thread in your environment, so set it explicitly
+fixest_nthreads <- 1L
+fixest::setFixest_nthreads(fixest_nthreads)
 
 out_dir <- Sys.getenv("OUTPUT_DIR", unset = "artifacts/results_uriel")
 data_dir <- Sys.getenv("DATA_DIR", unset = "data")
@@ -105,6 +108,30 @@ if (is.na(outlier_leverage_mult) || outlier_leverage_mult <= 0) {
 }
 
 outlier_use_selected_only <- parse_bool_env("OUTLIER_USE_SELECTED_ONLY", default = TRUE)
+
+# new toggles
+
+stex_distance_standardization_level <- tolower(
+  Sys.getenv("STEX_DISTANCE_STANDARDIZATION_LEVEL", unset = "pair")
+)
+if (!stex_distance_standardization_level %in% c("row", "pair")) {
+  stop("STEX_DISTANCE_STANDARDIZATION_LEVEL must be one of: row, pair")
+}
+
+stex_scatter_weighted_smooth <- parse_bool_env(
+  "STEX_SCATTER_WEIGHTED_SMOOTH",
+  default = TRUE
+)
+
+stex_outlier_include_outcome <- parse_bool_env(
+  "STEX_OUTLIER_INCLUDE_OUTCOME",
+  default = FALSE
+)
+
+toefl_outlier_include_outcome <- parse_bool_env(
+  "TOEFL_OUTLIER_INCLUDE_OUTCOME",
+  default = TRUE
+)
 
 # helper functions
 
@@ -500,10 +527,10 @@ flag_extreme_rows <- function(
   }
 
   out[, drop_flag := zscore_flag | leverage_flag]
-  out[zscore_flag & leverage_flag, reason := "zscore+leverage"]
-  out[zscore_flag & !leverage_flag, reason := "zscore"]
-  out[!zscore_flag & leverage_flag, reason := "leverage"]
-  out[!drop_flag, reason := "kept"]
+  out[zscore_flag == TRUE  & leverage_flag == TRUE,  reason := "zscore+leverage"]
+  out[zscore_flag == TRUE  & leverage_flag == FALSE, reason := "zscore"]
+  out[zscore_flag == FALSE & leverage_flag == TRUE,  reason := "leverage"]
+  out[drop_flag == FALSE, reason := "kept"]
 
   out[, row_index := NULL]
   out[]
@@ -524,6 +551,9 @@ toefl[, `:=`(
   L2_code = factor(L2_code)
 )]
 
+# row-level standardization for source tables
+# TOEFL always uses row-level data directly.
+# STEX row-level z columns are kept for row-level predictive analyses.
 standardize_cols(stex, distance_vars)
 standardize_cols(toefl, distance_vars)
 
@@ -573,6 +603,19 @@ stex_pair <- stex_main[, .(
   z_inventory_dist = first(z_inventory_dist)
 ), by = pair_id]
 
+# if STEX_DISTANCE_STANDARDIZATION_LEVEL=pair, overwrite the z_* columns
+# using pair-level distances instead of inherited row-level z-scores.
+if (stex_distance_standardization_level == "pair") {
+  standardize_cols(stex_pair, distance_vars)
+}
+
+# snapshots before optional filtering
+# these let us write out the actual dropped records later
+
+toefl_pre_filter <- copy(toefl)
+stex_pair_pre_filter <- copy(stex_pair)
+stex_main_pre_filter <- copy(stex_main)
+
 # optional outlier and leverage filtering
 
 filter_x_cols <- if (outlier_use_selected_only) selected_plot_z_vars else z_distance_vars
@@ -597,7 +640,7 @@ if (outlier_filter_mode != "none" && outlier_filter_scope %in% c("toefl", "both"
     dt = toefl,
     id_col = "toefl_row_id",
     x_cols = filter_x_cols,
-    y_cols = "Total",
+    y_cols = if (toefl_outlier_include_outcome) "Total" else NULL,
     mode = outlier_filter_mode,
     z_thresh = outlier_z_threshold,
     leverage_mult = outlier_leverage_mult
@@ -614,6 +657,7 @@ filter_summary[[length(filter_summary) + 1L]] <- data.table(
   z_threshold = outlier_z_threshold,
   leverage_mult = outlier_leverage_mult,
   selected_only = outlier_use_selected_only,
+  include_outcome = toefl_outlier_include_outcome,
   n_before = n_toefl_before,
   n_after = nrow(toefl),
   n_removed = n_toefl_before - nrow(toefl)
@@ -638,7 +682,7 @@ if (outlier_filter_mode != "none" && outlier_filter_scope %in% c("stex", "both")
     dt = stex_pair,
     id_col = "pair_id",
     x_cols = filter_x_cols,
-    y_cols = "Speaking",
+    y_cols = if (stex_outlier_include_outcome) "Speaking" else NULL,
     mode = outlier_filter_mode,
     z_thresh = outlier_z_threshold,
     leverage_mult = outlier_leverage_mult
@@ -657,6 +701,7 @@ filter_summary[[length(filter_summary) + 1L]] <- data.table(
   z_threshold = outlier_z_threshold,
   leverage_mult = outlier_leverage_mult,
   selected_only = outlier_use_selected_only,
+  include_outcome = stex_outlier_include_outcome,
   n_before = n_stex_pair_before,
   n_after = nrow(stex_pair),
   n_removed = n_stex_pair_before - nrow(stex_pair)
@@ -669,6 +714,7 @@ filter_summary[[length(filter_summary) + 1L]] <- data.table(
   z_threshold = outlier_z_threshold,
   leverage_mult = outlier_leverage_mult,
   selected_only = outlier_use_selected_only,
+  include_outcome = stex_outlier_include_outcome,
   n_before = n_stex_main_before,
   n_after = nrow(stex_main),
   n_removed = n_stex_main_before - nrow(stex_main)
@@ -676,15 +722,68 @@ filter_summary[[length(filter_summary) + 1L]] <- data.table(
 
 filter_summary <- rbindlist(filter_summary, use.names = TRUE, fill = TRUE)
 
+# full dropped-row reporting
+
+toefl_dropped_ids <- toefl_filter_log[drop_flag == TRUE, toefl_row_id]
+stex_dropped_pair_ids <- stex_pair_filter_log[drop_flag == TRUE, pair_id]
+
+toefl_dropped_rows <- merge(
+  toefl_pre_filter[toefl_row_id %in% toefl_dropped_ids],
+  toefl_filter_log[drop_flag == TRUE],
+  by = "toefl_row_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+stex_pair_dropped_rows <- merge(
+  stex_pair_pre_filter[pair_id %in% stex_dropped_pair_ids],
+  stex_pair_filter_log[drop_flag == TRUE],
+  by = "pair_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+stex_main_dropped_rows <- merge(
+  stex_main_pre_filter[pair_id %in% stex_dropped_pair_ids],
+  stex_pair_filter_log[drop_flag == TRUE],
+  by = "pair_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+toefl_drop_reason_summary <- toefl_filter_log[
+  drop_flag == TRUE, .N, by = .(reason)
+][order(-N)]
+
+stex_pair_drop_reason_summary <- stex_pair_filter_log[
+  drop_flag == TRUE, .N, by = .(reason)
+][order(-N)]
+
 fwrite(filter_summary, file.path(out_dir, "tables", "00_filter_summary.csv"))
 fwrite(toefl_filter_log, file.path(out_dir, "tables", "00_toefl_filter_log.csv"))
 fwrite(stex_pair_filter_log, file.path(out_dir, "tables", "00_stex_pair_filter_log.csv"))
+
+fwrite(toefl_dropped_rows, file.path(out_dir, "tables", "00a_toefl_dropped_rows.csv"))
+fwrite(stex_pair_dropped_rows, file.path(out_dir, "tables", "00b_stex_pair_dropped_rows.csv"))
+fwrite(stex_main_dropped_rows, file.path(out_dir, "tables", "00c_stex_main_rows_from_dropped_pairs.csv"))
+fwrite(toefl_drop_reason_summary, file.path(out_dir, "tables", "00d_toefl_drop_reason_summary.csv"))
+fwrite(stex_pair_drop_reason_summary, file.path(out_dir, "tables", "00e_stex_pair_drop_reason_summary.csv"))
 
 save(
   filter_summary,
   toefl_filter_log,
   stex_pair_filter_log,
   file = file.path(out_dir, "rdata", "00_filter_artifacts.RData"),
+  compress = "xz"
+)
+
+save(
+  toefl_dropped_rows,
+  stex_pair_dropped_rows,
+  stex_main_dropped_rows,
+  toefl_drop_reason_summary,
+  stex_pair_drop_reason_summary,
+  file = file.path(out_dir, "rdata", "00b_dropped_row_artifacts.RData"),
   compress = "xz"
 )
 
@@ -738,17 +837,28 @@ p_toefl_scatter <- ggplot(
 
 save_plot(p_toefl_scatter, "01_toefl_total_scatter.png", width = 12, height = 7)
 
+stex_pair_scatter_dt <- melt(
+  copy(stex_pair),
+  measure.vars = selected_plot_z_vars,
+  variable.name = "distance",
+  value.name = "z_distance"
+)
+
 p_stex_pair_scatter <- ggplot(
-  melt(
-    copy(stex_pair),
-    measure.vars = selected_plot_z_vars,
-    variable.name = "distance",
-    value.name = "z_distance"
-  ),
+  stex_pair_scatter_dt,
   aes(x = z_distance, y = Speaking, size = n)
 ) +
-  geom_point(alpha = 0.65) +
-  geom_smooth(method = "lm", se = TRUE) +
+  geom_point(alpha = 0.65)
+
+if (stex_scatter_weighted_smooth) {
+  p_stex_pair_scatter <- p_stex_pair_scatter +
+    geom_smooth(aes(weight = n), method = "lm", se = TRUE)
+} else {
+  p_stex_pair_scatter <- p_stex_pair_scatter +
+    geom_smooth(method = "lm", se = TRUE)
+}
+
+p_stex_pair_scatter <- p_stex_pair_scatter +
   facet_wrap(~ distance, scales = "free_x") +
   theme_bw(base_size = 11) +
   labs(
@@ -765,6 +875,11 @@ save_objects(
     "filter_summary",
     "toefl_filter_log",
     "stex_pair_filter_log",
+    "toefl_dropped_rows",
+    "stex_pair_dropped_rows",
+    "stex_main_dropped_rows",
+    "toefl_drop_reason_summary",
+    "stex_pair_drop_reason_summary",
     "toefl_cor",
     "stex_pair_cor",
     "stex_pair",
@@ -820,7 +935,7 @@ run_stex_speaking_models <- function(dat) {
       data = dat,
       weights = ~n,
       vcov = "hetero",
-      nthreads = n_cores
+      nthreads = fixest_nthreads
     )
     tidy_fixest(
       fit,
@@ -841,7 +956,7 @@ run_stex_speaking_models <- function(dat) {
     data = dat,
     weights = ~n,
     vcov = "hetero",
-    nthreads = n_cores
+    nthreads = fixest_nthreads
   )
   mech <- tidy_fixest(
     fit_mech,
@@ -861,7 +976,7 @@ run_stex_speaking_models <- function(dat) {
     data = dat,
     weights = ~n,
     vcov = "hetero",
-    nthreads = n_cores
+    nthreads = fixest_nthreads
   )
   all8 <- tidy_fixest(
     fit_all,
@@ -881,7 +996,7 @@ run_stex_speaking_models <- function(dat) {
       data = dat,
       weights = ~n,
       vcov = "hetero",
-      nthreads = n_cores
+      nthreads = fixest_nthreads
     )
     tidy_fixest(
       fit,
@@ -902,7 +1017,7 @@ run_stex_speaking_models <- function(dat) {
       data = dat,
       weights = ~n,
       vcov = "hetero",
-      nthreads = n_cores
+      nthreads = fixest_nthreads
     )
     tidy_fixest(
       fit,
@@ -945,7 +1060,7 @@ fit_all8_clustered <- feols(
   data = stex_pair,
   weights = ~n,
   cluster = ~pair_id,
-  nthreads = n_cores
+  nthreads = fixest_nthreads
 )
 
 all8_clustered_tidy <- as.data.table(broom::tidy(fit_all8_clustered, conf.int = TRUE))
@@ -961,7 +1076,7 @@ fit_stex_base <- feols(
   data = stex_pair,
   weights = ~n,
   vcov = "hetero",
-  nthreads = n_cores
+  nthreads = fixest_nthreads
 )
 
 fit_stex_mech <- feols(
@@ -975,7 +1090,7 @@ fit_stex_mech <- feols(
   data = stex_pair,
   weights = ~n,
   vcov = "hetero",
-  nthreads = n_cores
+  nthreads = fixest_nthreads
 )
 
 fit_stex_all8 <- feols(
@@ -989,7 +1104,7 @@ fit_stex_all8 <- feols(
   data = stex_pair,
   weights = ~n,
   vcov = "hetero",
-  nthreads = n_cores
+  nthreads = fixest_nthreads
 )
 
 stex_model_comparison <- rbindlist(list(
@@ -1257,12 +1372,23 @@ cat("  - OUTLIER_FILTER_MODE: ", outlier_filter_mode, "\n", sep = "")
 cat("  - OUTLIER_FILTER_SCOPE: ", outlier_filter_scope, "\n", sep = "")
 cat("  - OUTLIER_Z_THRESHOLD: ", outlier_z_threshold, "\n", sep = "")
 cat("  - OUTLIER_LEVERAGE_MULT: ", outlier_leverage_mult, "\n", sep = "")
-cat("  - OUTLIER_USE_SELECTED_ONLY: ", outlier_use_selected_only, "\n\n", sep = "")
+cat("  - OUTLIER_USE_SELECTED_ONLY: ", outlier_use_selected_only, "\n", sep = "")
+cat("  - TOEFL_OUTLIER_INCLUDE_OUTCOME: ", toefl_outlier_include_outcome, "\n", sep = "")
+cat("  - STEX_OUTLIER_INCLUDE_OUTCOME: ", stex_outlier_include_outcome, "\n\n", sep = "")
+
+cat("stex plotting / scaling configuration:\n")
+cat("  - STEX_DISTANCE_STANDARDIZATION_LEVEL: ", stex_distance_standardization_level, "\n", sep = "")
+cat("  - STEX_SCATTER_WEIGHTED_SMOOTH: ", stex_scatter_weighted_smooth, "\n\n", sep = "")
 
 cat("key files:\n")
 cat("  - 00_filter_summary.csv\n")
 cat("  - 00_toefl_filter_log.csv\n")
 cat("  - 00_stex_pair_filter_log.csv\n")
+cat("  - 00a_toefl_dropped_rows.csv\n")
+cat("  - 00b_stex_pair_dropped_rows.csv\n")
+cat("  - 00c_stex_main_rows_from_dropped_pairs.csv\n")
+cat("  - 00d_toefl_drop_reason_summary.csv\n")
+cat("  - 00e_stex_pair_drop_reason_summary.csv\n")
 cat("  - 04_toefl_inferential_results.csv\n")
 cat("  - 05_stex_inferential_results.csv\n")
 cat("  - 08_toefl_predictive_summary.csv\n")
@@ -1271,4 +1397,6 @@ cat("  - 11_toefl_best_single_distance_terms.csv\n")
 cat("  - 12_stex_best_single_distance_terms.csv\n")
 cat("  - 13_toefl_best_predictive_models.csv\n")
 cat("  - 14_stex_best_predictive_models.csv\n")
+cat("  - rdata/00_filter_artifacts.RData\n")
+cat("  - rdata/00b_dropped_row_artifacts.RData\n")
 cat("  - rdata/99_analysis_workspace.RData\n")

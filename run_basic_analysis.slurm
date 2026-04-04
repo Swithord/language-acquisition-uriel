@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:l40s:0
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=24G
-#SBATCH --time=8:00:00
+#SBATCH --time=00:10:00
 #SBATCH --output=slurm_outputs/%x-%j.out
 #SBATCH --error=slurm_outputs/%x-%j.err
 
@@ -35,7 +35,7 @@ export DATA_DIR="$SLURM_SUBMIT_DIR/data"
 export GLMNET_INNER_FOLDS=3
 export GLMNET_NLAMBDA=30
 
-# currently unused by analysis.R, but kept here in case you later wire them in
+# currently unused by analysis.R
 
 export STEX_OUTER_V=5
 export STEX_OUTER_REPEATS=3
@@ -47,11 +47,30 @@ export STEX_OUTER_REPEATS=3
 # z_syntactic_dist, z_morphological_dist, z_phonological_dist, z_inventory_dist
 # otherwise it uses all 8 standardized distance variables
 
-export OUTLIER_FILTER_MODE=none
-export OUTLIER_FILTER_SCOPE=none
-export OUTLIER_Z_THRESHOLD=2.5
+export OUTLIER_FILTER_MODE=zscore
+export OUTLIER_FILTER_SCOPE=both
+export OUTLIER_Z_THRESHOLD=2.25
 export OUTLIER_LEVERAGE_MULT=2.5
 export OUTLIER_USE_SELECTED_ONLY=true
+
+# outcome-in-filter toggles
+# if false, filtering is based only on x-side distance variables
+# if true, the outcome is also included in the zscore screen
+
+export TOEFL_OUTLIER_INCLUDE_OUTCOME=false
+export STEX_OUTLIER_INCLUDE_OUTCOME=false
+
+# STEX pair-plot / pair-analysis toggles
+# STEX_DISTANCE_STANDARDIZATION_LEVEL:
+#   row  = keep old behavior; pair z_* are inherited from row-level standardization
+#   pair = overwrite stex_pair z_* using pair-level standardization after aggregation
+#
+# STEX_SCATTER_WEIGHTED_SMOOTH:
+#   true  = smoother in the STEX scatter plot uses aes(weight = n)
+#   false = old unweighted smoother
+
+export STEX_DISTANCE_STANDARDIZATION_LEVEL=pair
+export STEX_SCATTER_WEIGHTED_SMOOTH=true
 
 # module setup
 
@@ -106,5 +125,9 @@ echo "filter scope: ${OUTLIER_FILTER_SCOPE}"
 echo "z threshold: ${OUTLIER_Z_THRESHOLD}"
 echo "leverage mult: ${OUTLIER_LEVERAGE_MULT}"
 echo "selected vars only: ${OUTLIER_USE_SELECTED_ONLY}"
+echo "toefl include outcome in filter: ${TOEFL_OUTLIER_INCLUDE_OUTCOME}"
+echo "stex include outcome in filter: ${STEX_OUTLIER_INCLUDE_OUTCOME}"
+echo "stex distance standardization level: ${STEX_DISTANCE_STANDARDIZATION_LEVEL}"
+echo "stex weighted smooth: ${STEX_SCATTER_WEIGHTED_SMOOTH}"
 
 Rscript --vanilla "${R_FILE}"

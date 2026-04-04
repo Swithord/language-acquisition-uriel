@@ -1,5 +1,7 @@
 #!/usr/bin/env Rscript
 
+# package setup
+
 library(data.table)
 library(ggplot2)
 library(fixest)
@@ -10,6 +12,8 @@ library(patchwork)
 library(scales)
 
 set.seed(1234)
+
+# threading and environment configuration
 
 n_cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = "1")))
 if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
@@ -25,8 +29,12 @@ dir.create(file.path(out_dir, "plots"), showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(out_dir, "tables"), showWarnings = FALSE, recursive = TRUE)
 dir.create(file.path(out_dir, "rdata"), showWarnings = FALSE, recursive = TRUE)
 
+# input data
+
 stex  <- fread(file.path(data_dir, "stex_with_uriel_distances.csv"))
 toefl <- fread(file.path(data_dir, "toefl_with_uriel_distances.csv"))
+
+# variable definitions
 
 distance_vars <- c(
   "featural_dist",
@@ -49,6 +57,13 @@ mechanistic_vars <- c(
 z_distance_vars <- paste0("z_", distance_vars)
 z_mechanistic_vars <- paste0("z_", mechanistic_vars)
 
+selected_plot_z_vars <- c(
+  "z_syntactic_dist",
+  "z_morphological_dist",
+  "z_phonological_dist",
+  "z_inventory_dist"
+)
+
 toefl_outcomes <- c("Reading", "Listening", "Speaking", "Writing", "Total")
 stex_primary_outcomes <- c("Speaking")
 
@@ -61,6 +76,37 @@ glmnet_nlambda_default <- suppressWarnings(as.integer(Sys.getenv("GLMNET_NLAMBDA
 if (is.na(glmnet_nlambda_default) || glmnet_nlambda_default < 20L) {
   glmnet_nlambda_default <- 30L
 }
+
+# outlier and leverage filtering configuration
+
+parse_bool_env <- function(x, default = FALSE) {
+  val <- Sys.getenv(x, unset = if (default) "true" else "false")
+  tolower(val) %in% c("1", "true", "t", "yes", "y")
+}
+
+outlier_filter_mode <- tolower(Sys.getenv("OUTLIER_FILTER_MODE", unset = "none"))
+if (!outlier_filter_mode %in% c("none", "zscore", "leverage", "both")) {
+  stop("OUTLIER_FILTER_MODE must be one of: none, zscore, leverage, both")
+}
+
+outlier_filter_scope <- tolower(Sys.getenv("OUTLIER_FILTER_SCOPE", unset = "none"))
+if (!outlier_filter_scope %in% c("none", "toefl", "stex", "both")) {
+  stop("OUTLIER_FILTER_SCOPE must be one of: none, toefl, stex, both")
+}
+
+outlier_z_threshold <- suppressWarnings(as.numeric(Sys.getenv("OUTLIER_Z_THRESHOLD", unset = "2.5")))
+if (is.na(outlier_z_threshold) || outlier_z_threshold <= 0) {
+  outlier_z_threshold <- 2.5
+}
+
+outlier_leverage_mult <- suppressWarnings(as.numeric(Sys.getenv("OUTLIER_LEVERAGE_MULT", unset = "2.5")))
+if (is.na(outlier_leverage_mult) || outlier_leverage_mult <= 0) {
+  outlier_leverage_mult <- 2.5
+}
+
+outlier_use_selected_only <- parse_bool_env("OUTLIER_USE_SELECTED_ONLY", default = TRUE)
+
+# helper functions
 
 save_objects <- function(obj_names, filename) {
   save(
@@ -360,6 +406,111 @@ perf_bar_plot <- function(dt, metric, title_text) {
     theme_bw(base_size = 11)
 }
 
+flag_extreme_rows <- function(
+  dt,
+  id_col,
+  x_cols,
+  y_cols = NULL,
+  mode = c("none", "zscore", "leverage", "both"),
+  z_thresh = 2.5,
+  leverage_mult = 2.5
+) {
+  mode <- match.arg(mode)
+
+  if (!id_col %in% names(dt)) {
+    stop("id_col not found in dt: ", id_col)
+  }
+
+  x_cols <- intersect(x_cols, names(dt))
+  y_cols <- intersect(y_cols, names(dt))
+  use_cols <- unique(c(x_cols, y_cols))
+
+  out <- data.table(row_index = seq_len(nrow(dt)))
+  out[, (id_col) := dt[[id_col]]]
+  out[, `:=`(
+    zscore_flag = FALSE,
+    leverage_flag = FALSE,
+    drop_flag = FALSE,
+    max_abs_z = NA_real_,
+    leverage = NA_real_,
+    leverage_threshold = NA_real_,
+    reason = "kept"
+  )]
+
+  if (mode == "none" || length(use_cols) == 0L || nrow(dt) == 0L) {
+    out[, row_index := NULL]
+    return(out)
+  }
+
+  cc <- complete.cases(dt[, ..use_cols])
+  if (!any(cc)) {
+    out[, row_index := NULL]
+    return(out)
+  }
+
+  idx_cc <- which(cc)
+  dcc <- copy(dt[idx_cc])
+
+  if (mode %in% c("zscore", "both")) {
+    z_list <- lapply(use_cols, function(v) {
+      x <- dcc[[v]]
+      s <- sd(x, na.rm = TRUE)
+      if (is.na(s) || s == 0) {
+        rep(0, length(x))
+      } else {
+        (x - mean(x, na.rm = TRUE)) / s
+      }
+    })
+
+    z_mat <- do.call(cbind, z_list)
+    if (is.null(dim(z_mat))) {
+      z_mat <- matrix(z_mat, ncol = 1L)
+    }
+
+    max_abs_z <- apply(abs(z_mat), 1L, max, na.rm = TRUE)
+    z_flag <- max_abs_z > z_thresh
+
+    out[idx_cc, `:=`(
+      zscore_flag = z_flag,
+      max_abs_z = max_abs_z
+    )]
+  }
+
+  if (mode %in% c("leverage", "both") && length(x_cols) > 0L) {
+    mm <- model.matrix(
+      as.formula(paste0("~ ", paste(x_cols, collapse = " + "))),
+      data = dcc
+    )
+
+    n <- nrow(mm)
+    p <- ncol(mm)
+
+    if (n > 0L && p > 0L) {
+      qx <- qr(mm)
+      qmat <- qr.Q(qx)
+      h <- rowSums(qmat^2)
+      lev_thresh <- leverage_mult * p / n
+
+      out[idx_cc, `:=`(
+        leverage = h,
+        leverage_threshold = lev_thresh,
+        leverage_flag = h > lev_thresh
+      )]
+    }
+  }
+
+  out[, drop_flag := zscore_flag | leverage_flag]
+  out[zscore_flag & leverage_flag, reason := "zscore+leverage"]
+  out[zscore_flag & !leverage_flag, reason := "zscore"]
+  out[!zscore_flag & leverage_flag, reason := "leverage"]
+  out[!drop_flag, reason := "kept"]
+
+  out[, row_index := NULL]
+  out[]
+}
+
+# data preparation
+
 stex[, `:=`(
   Sex = factor(Sex),
   C = factor(C),
@@ -375,6 +526,8 @@ toefl[, `:=`(
 
 standardize_cols(stex, distance_vars)
 standardize_cols(toefl, distance_vars)
+
+toefl[, toefl_row_id := .I]
 
 stex_main <- copy(
   stex[
@@ -420,6 +573,123 @@ stex_pair <- stex_main[, .(
   z_inventory_dist = first(z_inventory_dist)
 ), by = pair_id]
 
+# optional outlier and leverage filtering
+
+filter_x_cols <- if (outlier_use_selected_only) selected_plot_z_vars else z_distance_vars
+
+filter_summary <- list()
+
+toefl_filter_log <- data.table(
+  toefl_row_id = toefl$toefl_row_id,
+  zscore_flag = FALSE,
+  leverage_flag = FALSE,
+  drop_flag = FALSE,
+  max_abs_z = NA_real_,
+  leverage = NA_real_,
+  leverage_threshold = NA_real_,
+  reason = "kept"
+)
+
+n_toefl_before <- nrow(toefl)
+
+if (outlier_filter_mode != "none" && outlier_filter_scope %in% c("toefl", "both")) {
+  toefl_filter_log <- flag_extreme_rows(
+    dt = toefl,
+    id_col = "toefl_row_id",
+    x_cols = filter_x_cols,
+    y_cols = "Total",
+    mode = outlier_filter_mode,
+    z_thresh = outlier_z_threshold,
+    leverage_mult = outlier_leverage_mult
+  )
+
+  flagged_toefl_ids <- toefl_filter_log[drop_flag == TRUE, toefl_row_id]
+  toefl <- toefl[!toefl_row_id %in% flagged_toefl_ids]
+}
+
+filter_summary[[length(filter_summary) + 1L]] <- data.table(
+  dataset = "toefl",
+  filter_mode = outlier_filter_mode,
+  filter_scope = outlier_filter_scope,
+  z_threshold = outlier_z_threshold,
+  leverage_mult = outlier_leverage_mult,
+  selected_only = outlier_use_selected_only,
+  n_before = n_toefl_before,
+  n_after = nrow(toefl),
+  n_removed = n_toefl_before - nrow(toefl)
+)
+
+stex_pair_filter_log <- data.table(
+  pair_id = stex_pair$pair_id,
+  zscore_flag = FALSE,
+  leverage_flag = FALSE,
+  drop_flag = FALSE,
+  max_abs_z = NA_real_,
+  leverage = NA_real_,
+  leverage_threshold = NA_real_,
+  reason = "kept"
+)
+
+n_stex_pair_before <- nrow(stex_pair)
+n_stex_main_before <- nrow(stex_main)
+
+if (outlier_filter_mode != "none" && outlier_filter_scope %in% c("stex", "both")) {
+  stex_pair_filter_log <- flag_extreme_rows(
+    dt = stex_pair,
+    id_col = "pair_id",
+    x_cols = filter_x_cols,
+    y_cols = "Speaking",
+    mode = outlier_filter_mode,
+    z_thresh = outlier_z_threshold,
+    leverage_mult = outlier_leverage_mult
+  )
+
+  flagged_pairs <- as.character(stex_pair_filter_log[drop_flag == TRUE, pair_id])
+
+  stex_pair <- stex_pair[!as.character(pair_id) %in% flagged_pairs]
+  stex_main <- stex_main[!as.character(pair_id) %in% flagged_pairs]
+}
+
+filter_summary[[length(filter_summary) + 1L]] <- data.table(
+  dataset = "stex_pair",
+  filter_mode = outlier_filter_mode,
+  filter_scope = outlier_filter_scope,
+  z_threshold = outlier_z_threshold,
+  leverage_mult = outlier_leverage_mult,
+  selected_only = outlier_use_selected_only,
+  n_before = n_stex_pair_before,
+  n_after = nrow(stex_pair),
+  n_removed = n_stex_pair_before - nrow(stex_pair)
+)
+
+filter_summary[[length(filter_summary) + 1L]] <- data.table(
+  dataset = "stex_main",
+  filter_mode = outlier_filter_mode,
+  filter_scope = outlier_filter_scope,
+  z_threshold = outlier_z_threshold,
+  leverage_mult = outlier_leverage_mult,
+  selected_only = outlier_use_selected_only,
+  n_before = n_stex_main_before,
+  n_after = nrow(stex_main),
+  n_removed = n_stex_main_before - nrow(stex_main)
+)
+
+filter_summary <- rbindlist(filter_summary, use.names = TRUE, fill = TRUE)
+
+fwrite(filter_summary, file.path(out_dir, "tables", "00_filter_summary.csv"))
+fwrite(toefl_filter_log, file.path(out_dir, "tables", "00_toefl_filter_log.csv"))
+fwrite(stex_pair_filter_log, file.path(out_dir, "tables", "00_stex_pair_filter_log.csv"))
+
+save(
+  filter_summary,
+  toefl_filter_log,
+  stex_pair_filter_log,
+  file = file.path(out_dir, "rdata", "00_filter_artifacts.RData"),
+  compress = "xz"
+)
+
+# descriptive analyses
+
 toefl_cor <- rbindlist(lapply(toefl_outcomes, function(y) {
   rbindlist(lapply(distance_vars, function(d) {
     data.table(
@@ -450,7 +720,7 @@ fwrite(stex_pair, file.path(out_dir, "tables", "03_stex_pair_summary.csv"))
 p_toefl_scatter <- ggplot(
   melt(
     copy(toefl),
-    measure.vars = c("z_syntactic_dist", "z_morphological_dist", "z_phonological_dist", "z_inventory_dist"),
+    measure.vars = selected_plot_z_vars,
     variable.name = "distance",
     value.name = "z_distance"
   ),
@@ -471,7 +741,7 @@ save_plot(p_toefl_scatter, "01_toefl_total_scatter.png", width = 12, height = 7)
 p_stex_pair_scatter <- ggplot(
   melt(
     copy(stex_pair),
-    measure.vars = c("z_syntactic_dist", "z_morphological_dist", "z_phonological_dist", "z_inventory_dist"),
+    measure.vars = selected_plot_z_vars,
     variable.name = "distance",
     value.name = "z_distance"
   ),
@@ -491,9 +761,20 @@ p_stex_pair_scatter <- ggplot(
 save_plot(p_stex_pair_scatter, "02_stex_pair_speaking_scatter.png", width = 12, height = 7)
 
 save_objects(
-  c("toefl_cor", "stex_pair_cor", "stex_pair", "p_toefl_scatter", "p_stex_pair_scatter"),
+  c(
+    "filter_summary",
+    "toefl_filter_log",
+    "stex_pair_filter_log",
+    "toefl_cor",
+    "stex_pair_cor",
+    "stex_pair",
+    "p_toefl_scatter",
+    "p_stex_pair_scatter"
+  ),
   "01_descriptive_artifacts.RData"
 )
+
+# inferential analyses for TOEFL
 
 run_toefl_models <- function(dat, outcome) {
   uni <- rbindlist(lapply(z_distance_vars, function(zv) {
@@ -522,6 +803,8 @@ p_toefl_coef <- coef_forest_plot(
   "TOEFL: one-distance-at-a-time inferential models"
 )
 save_plot(p_toefl_coef, "03_toefl_inferential_coefficients.png", width = 14, height = 9)
+
+# inferential analyses for STEX
 
 run_stex_speaking_models <- function(dat) {
   outcome <- "Speaking"
@@ -645,7 +928,6 @@ write_partial_dt(
   "05_stex_inferential_results.RData"
 )
 
-
 p_stex_coef <- coef_forest_plot(
   stex_inf[
     outcome == "Speaking" &
@@ -760,6 +1042,8 @@ save_objects(
   "02_inferential_artifacts.RData"
 )
 
+# predictive analyses for TOEFL
+
 toefl_specs <- list(
   list(name = "baseline_mean", type = "baseline_mean", rhs = NULL),
   list(name = "ridge_mechanistic", type = "glmnet", rhs = paste(z_mechanistic_vars, collapse = " + ")),
@@ -810,6 +1094,8 @@ p_toefl_perf <- perf_bar_plot(
   title_text = "TOEFL predictive performance (5-fold CV; lower RMSE is better)"
 )
 save_plot(p_toefl_perf, "05_toefl_predictive_rmse.png", width = 14, height = 8)
+
+# predictive analyses for STEX
 
 stex_baseline_rhs <- "AaA + LoR + Edu.day + Sex + Enroll + C + L2 + Family"
 
@@ -921,6 +1207,8 @@ save_objects(
   "04_predictive_artifacts.RData"
 )
 
+# summary tables
+
 toefl_best_single <- toefl_inf[
   model_block == "single_distance" & term != "(Intercept)"
 ][order(outcome, p.value)][
@@ -957,12 +1245,24 @@ save_objects(
   "05_summary_tables.RData"
 )
 
+# final save and console summary
+
 save.image(file = file.path(out_dir, "rdata", "99_analysis_workspace.RData"), compress = "xz")
 
 cat("\nanalysis complete.\n")
 cat("outputs written to: ", normalizePath(out_dir), "\n\n")
 
+cat("filter configuration:\n")
+cat("  - OUTLIER_FILTER_MODE: ", outlier_filter_mode, "\n", sep = "")
+cat("  - OUTLIER_FILTER_SCOPE: ", outlier_filter_scope, "\n", sep = "")
+cat("  - OUTLIER_Z_THRESHOLD: ", outlier_z_threshold, "\n", sep = "")
+cat("  - OUTLIER_LEVERAGE_MULT: ", outlier_leverage_mult, "\n", sep = "")
+cat("  - OUTLIER_USE_SELECTED_ONLY: ", outlier_use_selected_only, "\n\n", sep = "")
+
 cat("key files:\n")
+cat("  - 00_filter_summary.csv\n")
+cat("  - 00_toefl_filter_log.csv\n")
+cat("  - 00_stex_pair_filter_log.csv\n")
 cat("  - 04_toefl_inferential_results.csv\n")
 cat("  - 05_stex_inferential_results.csv\n")
 cat("  - 08_toefl_predictive_summary.csv\n")

@@ -604,13 +604,12 @@ stex_pair <- stex_main[, .(
 ), by = pair_id]
 
 # if STEX_DISTANCE_STANDARDIZATION_LEVEL=pair, overwrite the z_* columns
-# using pair-level distances instead of inherited row-level z-scores.
+# using pair-level standardization after aggregation.
 if (stex_distance_standardization_level == "pair") {
   standardize_cols(stex_pair, distance_vars)
 }
 
 # snapshots before optional filtering
-# these let us write out the actual dropped records later
 
 toefl_pre_filter <- copy(toefl)
 stex_pair_pre_filter <- copy(stex_pair)
@@ -1360,6 +1359,562 @@ save_objects(
   "05_summary_tables.RData"
 )
 
+# additional STEX pair-level aggregated experiment
+
+weighted_cor_local <- function(x, y, w) {
+  ok <- is.finite(x) & is.finite(y) & is.finite(w) & (w > 0)
+  if (sum(ok) < 2L) return(NA_real_)
+
+  x <- x[ok]
+  y <- y[ok]
+  w <- w[ok]
+
+  mx <- weighted.mean(x, w)
+  my <- weighted.mean(y, w)
+
+  vx <- sum(w * (x - mx)^2)
+  vy <- sum(w * (y - my)^2)
+
+  if (!is.finite(vx) || !is.finite(vy) || vx <= 0 || vy <= 0) {
+    return(NA_real_)
+  }
+
+  sum(w * (x - mx) * (y - my)) / sqrt(vx * vy)
+}
+
+pair_corr_one <- function(dat, outcome, distance, weight_col) {
+  vars_needed <- unique(c(outcome, distance, weight_col))
+  dat_use <- copy(dat[complete.cases(dat[, ..vars_needed]) & get(weight_col) > 0])
+
+  if (nrow(dat_use) < 2L) {
+    return(data.table(
+      dataset = "stex_pair_aggregated",
+      outcome = outcome,
+      distance = distance,
+      weight_col = weight_col,
+      n_pairs = nrow(dat_use),
+      total_weight = if (nrow(dat_use) == 0L) 0 else sum(dat_use[[weight_col]], na.rm = TRUE),
+      cor_unweighted = NA_real_,
+      cor_weighted = NA_real_
+    ))
+  }
+
+  data.table(
+    dataset = "stex_pair_aggregated",
+    outcome = outcome,
+    distance = distance,
+    weight_col = weight_col,
+    n_pairs = nrow(dat_use),
+    total_weight = sum(dat_use[[weight_col]], na.rm = TRUE),
+    cor_unweighted = suppressWarnings(cor(dat_use[[outcome]], dat_use[[distance]], use = "complete.obs")),
+    cor_weighted = weighted_cor_local(dat_use[[outcome]], dat_use[[distance]], dat_use[[weight_col]])
+  )
+}
+
+pair_partial_corr_one <- function(dat, outcome, distance, baseline_rhs, weight_col) {
+  vars_needed <- unique(c(
+    outcome,
+    distance,
+    weight_col,
+    all.vars(as.formula(paste0("~ ", baseline_rhs)))
+  ))
+
+  dat_use <- copy(dat[complete.cases(dat[, ..vars_needed]) & get(weight_col) > 0])
+
+  if (nrow(dat_use) < 3L) {
+    return(data.table(
+      dataset = "stex_pair_aggregated",
+      outcome = outcome,
+      distance = distance,
+      weight_col = weight_col,
+      baseline_rhs = baseline_rhs,
+      n_pairs = nrow(dat_use),
+      total_weight = if (nrow(dat_use) == 0L) 0 else sum(dat_use[[weight_col]], na.rm = TRUE),
+      partial_cor_unweighted = NA_real_,
+      partial_cor_weighted = NA_real_
+    ))
+  }
+
+  fit_y <- lm(
+    as.formula(paste0(outcome, " ~ ", baseline_rhs)),
+    data = dat_use,
+    weights = dat_use[[weight_col]]
+  )
+
+  fit_x <- lm(
+    as.formula(paste0(distance, " ~ ", baseline_rhs)),
+    data = dat_use,
+    weights = dat_use[[weight_col]]
+  )
+
+  y_resid <- residuals(fit_y)
+  x_resid <- residuals(fit_x)
+
+  data.table(
+    dataset = "stex_pair_aggregated",
+    outcome = outcome,
+    distance = distance,
+    weight_col = weight_col,
+    baseline_rhs = baseline_rhs,
+    n_pairs = nrow(dat_use),
+    total_weight = sum(dat_use[[weight_col]], na.rm = TRUE),
+    partial_cor_unweighted = suppressWarnings(cor(y_resid, x_resid, use = "complete.obs")),
+    partial_cor_weighted = weighted_cor_local(y_resid, x_resid, dat_use[[weight_col]])
+  )
+}
+
+pair_reg_one <- function(dat, outcome, distance, weight_col, baseline_rhs = NULL) {
+  rhs <- if (is.null(baseline_rhs)) {
+    distance
+  } else {
+    paste(distance, baseline_rhs, sep = " + ")
+  }
+
+  vars_needed <- unique(c(
+    outcome,
+    distance,
+    weight_col,
+    if (is.null(baseline_rhs)) character(0) else all.vars(as.formula(paste0("~ ", baseline_rhs)))
+  ))
+
+  dat_use <- copy(dat[complete.cases(dat[, ..vars_needed]) & get(weight_col) > 0])
+
+  if (nrow(dat_use) < 3L) {
+    return(data.table(
+      dataset = "stex_pair_aggregated",
+      outcome = outcome,
+      distance = distance,
+      weight_col = weight_col,
+      model_block = if (is.null(baseline_rhs)) "raw_pair" else "pair_plus_baseline",
+      baseline_rhs = if (is.null(baseline_rhs)) NA_character_ else baseline_rhs,
+      term = distance,
+      estimate = NA_real_,
+      std.error = NA_real_,
+      statistic = NA_real_,
+      p.value = NA_real_,
+      conf.low = NA_real_,
+      conf.high = NA_real_,
+      n_pairs = nrow(dat_use),
+      total_weight = if (nrow(dat_use) == 0L) 0 else sum(dat_use[[weight_col]], na.rm = TRUE),
+      r.squared = NA_real_,
+      adj.r.squared = NA_real_,
+      AIC = NA_real_,
+      BIC = NA_real_
+    ))
+  }
+
+  fit <- lm(
+    as.formula(paste0(outcome, " ~ ", rhs)),
+    data = dat_use,
+    weights = dat_use[[weight_col]]
+  )
+
+  td <- as.data.table(broom::tidy(fit, conf.int = TRUE))
+  gl <- as.data.table(broom::glance(fit))
+
+  td_term <- td[term == distance]
+
+  if (nrow(td_term) == 0L) {
+    td_term <- data.table(
+      term = distance,
+      estimate = NA_real_,
+      std.error = NA_real_,
+      statistic = NA_real_,
+      p.value = NA_real_,
+      conf.low = NA_real_,
+      conf.high = NA_real_
+    )
+  }
+
+  td_term[, `:=`(
+    dataset = "stex_pair_aggregated",
+    outcome = outcome,
+    distance = distance,
+    weight_col = weight_col,
+    model_block = if (is.null(baseline_rhs)) "raw_pair" else "pair_plus_baseline",
+    baseline_rhs = if (is.null(baseline_rhs)) NA_character_ else baseline_rhs,
+    n_pairs = nrow(dat_use),
+    total_weight = sum(dat_use[[weight_col]], na.rm = TRUE),
+    r.squared = gl$r.squared[1],
+    adj.r.squared = gl$adj.r.squared[1],
+    AIC = AIC(fit),
+    BIC = BIC(fit)
+  )]
+
+  td_term[]
+}
+
+pair_baseline_fit_stats <- function(dat, outcome, weight_col, baseline_rhs) {
+  vars_needed <- unique(c(
+    outcome,
+    weight_col,
+    all.vars(as.formula(paste0("~ ", baseline_rhs)))
+  ))
+
+  dat_use <- copy(dat[complete.cases(dat[, ..vars_needed]) & get(weight_col) > 0])
+
+  if (nrow(dat_use) < 3L) {
+    return(data.table(
+      dataset = "stex_pair_aggregated",
+      outcome = outcome,
+      model_name = "baseline_only_pair",
+      weight_col = weight_col,
+      baseline_rhs = baseline_rhs,
+      n_pairs = nrow(dat_use),
+      total_weight = if (nrow(dat_use) == 0L) 0 else sum(dat_use[[weight_col]], na.rm = TRUE),
+      r.squared = NA_real_,
+      adj.r.squared = NA_real_,
+      AIC = NA_real_,
+      BIC = NA_real_
+    ))
+  }
+
+  fit <- lm(
+    as.formula(paste0(outcome, " ~ ", baseline_rhs)),
+    data = dat_use,
+    weights = dat_use[[weight_col]]
+  )
+
+  gl <- as.data.table(broom::glance(fit))
+
+  data.table(
+    dataset = "stex_pair_aggregated",
+    outcome = outcome,
+    model_name = "baseline_only_pair",
+    weight_col = weight_col,
+    baseline_rhs = baseline_rhs,
+    n_pairs = nrow(dat_use),
+    total_weight = sum(dat_use[[weight_col]], na.rm = TRUE),
+    r.squared = gl$r.squared[1],
+    adj.r.squared = gl$adj.r.squared[1],
+    AIC = AIC(fit),
+    BIC = BIC(fit)
+  )
+}
+
+make_pair_partial_plot_data <- function(dat, outcome, distances, baseline_rhs, weight_col) {
+  out <- lapply(distances, function(distance) {
+    vars_needed <- unique(c(
+      outcome,
+      distance,
+      weight_col,
+      all.vars(as.formula(paste0("~ ", baseline_rhs)))
+    ))
+
+    dat_use <- copy(dat[complete.cases(dat[, ..vars_needed]) & get(weight_col) > 0])
+
+    if (nrow(dat_use) < 3L) return(NULL)
+
+    fit_y <- lm(
+      as.formula(paste0(outcome, " ~ ", baseline_rhs)),
+      data = dat_use,
+      weights = dat_use[[weight_col]]
+    )
+
+    fit_x <- lm(
+      as.formula(paste0(distance, " ~ ", baseline_rhs)),
+      data = dat_use,
+      weights = dat_use[[weight_col]]
+    )
+
+    data.table(
+      pair_id = dat_use$pair_id,
+      distance = distance,
+      x_resid = residuals(fit_x),
+      y_resid = residuals(fit_y),
+      n_weight = dat_use[[weight_col]]
+    )
+  })
+
+  rbindlist(out, use.names = TRUE, fill = TRUE)
+}
+
+# build pair-aggregated STEX table
+
+stex_pair_family <- stex_main[, .(
+  Family_mode = mode_char(as.character(Family))
+), by = pair_id]
+
+stex_pair_outcome_counts <- stex_main[, .(
+  n_Speaking = sum(!is.na(Speaking)),
+  n_new_feat = sum(!is.na(new_feat)),
+  n_new_sounds = sum(!is.na(new_sounds))
+), by = pair_id]
+
+stex_pair_aggregated <- merge(
+  copy(stex_pair),
+  stex_pair_family,
+  by = "pair_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+stex_pair_aggregated <- merge(
+  stex_pair_aggregated,
+  stex_pair_outcome_counts,
+  by = "pair_id",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+stex_pair_aggregated[, Family_mode := factor(Family_mode)]
+
+stex_pair_aggregated_outcomes <- c("Speaking", "new_feat", "new_sounds")
+stex_pair_aggregated_weight_map <- c(
+  Speaking = "n_Speaking",
+  new_feat = "n_new_feat",
+  new_sounds = "n_new_sounds"
+)
+
+stex_pair_baseline_rhs <- "AaA + LoR + Edu.day + prop_female + Enroll + C + L2_code + Family_mode"
+
+# raw pair-aggregated correlations
+
+stex_pair_aggregated_raw_cor <- rbindlist(
+  lapply(stex_pair_aggregated_outcomes, function(y) {
+    weight_col <- unname(stex_pair_aggregated_weight_map[[y]])
+    rbindlist(
+      lapply(z_distance_vars, function(zv) {
+        pair_corr_one(
+          dat = stex_pair_aggregated,
+          outcome = y,
+          distance = zv,
+          weight_col = weight_col
+        )
+      }),
+      use.names = TRUE,
+      fill = TRUE
+    )
+  }),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+fwrite(
+  stex_pair_aggregated_raw_cor,
+  file.path(out_dir, "tables", "15_stex_pair_aggregated_raw_correlations.csv")
+)
+
+# baseline-adjusted pair-aggregated partial correlations
+
+stex_pair_aggregated_partial_cor <- rbindlist(
+  lapply(stex_pair_aggregated_outcomes, function(y) {
+    weight_col <- unname(stex_pair_aggregated_weight_map[[y]])
+    rbindlist(
+      lapply(z_distance_vars, function(zv) {
+        pair_partial_corr_one(
+          dat = stex_pair_aggregated,
+          outcome = y,
+          distance = zv,
+          baseline_rhs = stex_pair_baseline_rhs,
+          weight_col = weight_col
+        )
+      }),
+      use.names = TRUE,
+      fill = TRUE
+    )
+  }),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+fwrite(
+  stex_pair_aggregated_partial_cor,
+  file.path(out_dir, "tables", "16_stex_pair_aggregated_partial_correlations.csv")
+)
+
+# raw pair-aggregated weighted regressions
+
+stex_pair_aggregated_raw_reg <- rbindlist(
+  lapply(stex_pair_aggregated_outcomes, function(y) {
+    weight_col <- unname(stex_pair_aggregated_weight_map[[y]])
+    rbindlist(
+      lapply(z_distance_vars, function(zv) {
+        pair_reg_one(
+          dat = stex_pair_aggregated,
+          outcome = y,
+          distance = zv,
+          weight_col = weight_col,
+          baseline_rhs = NULL
+        )
+      }),
+      use.names = TRUE,
+      fill = TRUE
+    )
+  }),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+stex_pair_aggregated_raw_reg[term != "(Intercept)", p_adj_fdr := p.adjust(p.value, method = "fdr"), by = .(outcome)]
+
+fwrite(
+  stex_pair_aggregated_raw_reg,
+  file.path(out_dir, "tables", "17_stex_pair_aggregated_raw_regressions.csv")
+)
+
+# pair-aggregated weighted regressions with baseline block
+
+stex_pair_aggregated_baseline_reg <- rbindlist(
+  lapply(stex_pair_aggregated_outcomes, function(y) {
+    weight_col <- unname(stex_pair_aggregated_weight_map[[y]])
+    rbindlist(
+      lapply(z_distance_vars, function(zv) {
+        pair_reg_one(
+          dat = stex_pair_aggregated,
+          outcome = y,
+          distance = zv,
+          weight_col = weight_col,
+          baseline_rhs = stex_pair_baseline_rhs
+        )
+      }),
+      use.names = TRUE,
+      fill = TRUE
+    )
+  }),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+stex_pair_aggregated_baseline_reg[term != "(Intercept)", p_adj_fdr := p.adjust(p.value, method = "fdr"), by = .(outcome)]
+
+fwrite(
+  stex_pair_aggregated_baseline_reg,
+  file.path(out_dir, "tables", "18_stex_pair_aggregated_baseline_regressions.csv")
+)
+
+# baseline-only fit summaries
+
+stex_pair_aggregated_baseline_fits <- rbindlist(
+  lapply(stex_pair_aggregated_outcomes, function(y) {
+    weight_col <- unname(stex_pair_aggregated_weight_map[[y]])
+    pair_baseline_fit_stats(
+      dat = stex_pair_aggregated,
+      outcome = y,
+      weight_col = weight_col,
+      baseline_rhs = stex_pair_baseline_rhs
+    )
+  }),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+fwrite(
+  stex_pair_aggregated_baseline_fits,
+  file.path(out_dir, "tables", "19_stex_pair_aggregated_baseline_fit_stats.csv")
+)
+
+# raw pair-level speaking plot data and plot (without baseline adjustment)
+
+stex_pair_speaking_raw_plot_data <- melt(
+  copy(stex_pair_aggregated),
+  measure.vars = selected_plot_z_vars,
+  variable.name = "distance",
+  value.name = "z_distance"
+)
+
+stex_pair_speaking_raw_plot_data <- stex_pair_speaking_raw_plot_data[
+  !is.na(Speaking) & !is.na(z_distance) & !is.na(n_Speaking) & n_Speaking > 0
+]
+
+fwrite(
+  stex_pair_speaking_raw_plot_data,
+  file.path(out_dir, "tables", "20_stex_pair_speaking_raw_plot_data.csv")
+)
+
+p_stex_pair_speaking_raw <- ggplot(
+  stex_pair_speaking_raw_plot_data,
+  aes(x = z_distance, y = Speaking, size = n_Speaking)
+) +
+  geom_point(alpha = 0.65)
+
+if (stex_scatter_weighted_smooth) {
+  p_stex_pair_speaking_raw <- p_stex_pair_speaking_raw +
+    geom_smooth(aes(weight = n_Speaking), method = "lm", se = TRUE)
+} else {
+  p_stex_pair_speaking_raw <- p_stex_pair_speaking_raw +
+    geom_smooth(method = "lm", se = TRUE)
+}
+
+p_stex_pair_speaking_raw <- p_stex_pair_speaking_raw +
+  facet_wrap(~ distance, scales = "free_x") +
+  theme_bw(base_size = 11) +
+  labs(
+    title = "STEX pair-level Speaking vs selected URIEL distances (raw pair-aggregated plot)",
+    x = "Standardised URIEL distance",
+    y = "Mean Speaking",
+    size = "Pair size used"
+  )
+
+save_plot(
+  p_stex_pair_speaking_raw,
+  "08a_stex_pair_speaking_raw_scatter_pair_aggregated.png",
+  width = 12,
+  height = 7
+)
+
+# adjusted/residualised speaking plot for selected mechanistic distances
+
+stex_pair_speaking_partial_plot_data <- make_pair_partial_plot_data(
+  dat = stex_pair_aggregated,
+  outcome = "Speaking",
+  distances = selected_plot_z_vars,
+  baseline_rhs = stex_pair_baseline_rhs,
+  weight_col = unname(stex_pair_aggregated_weight_map[["Speaking"]])
+)
+
+fwrite(
+  stex_pair_speaking_partial_plot_data,
+  file.path(out_dir, "tables", "20a_stex_pair_speaking_partial_plot_data.csv")
+)
+
+p_stex_pair_speaking_partial <- ggplot(
+  stex_pair_speaking_partial_plot_data,
+  aes(x = x_resid, y = y_resid, size = n_weight)
+) +
+  geom_point(alpha = 0.65)
+
+if (stex_scatter_weighted_smooth) {
+  p_stex_pair_speaking_partial <- p_stex_pair_speaking_partial +
+    geom_smooth(aes(weight = n_weight), method = "lm", se = TRUE)
+} else {
+  p_stex_pair_speaking_partial <- p_stex_pair_speaking_partial +
+    geom_smooth(method = "lm", se = TRUE)
+}
+
+p_stex_pair_speaking_partial <- p_stex_pair_speaking_partial +
+  facet_wrap(~ distance, scales = "free_x") +
+  theme_bw(base_size = 11) +
+  labs(
+    title = "STEX pair-level Speaking vs selected URIEL distances after pair-level baseline adjustment",
+    x = "Residualised standardised URIEL distance",
+    y = "Residualised mean Speaking",
+    size = "Pair size used"
+  )
+
+save_plot(
+  p_stex_pair_speaking_partial,
+  "08_stex_pair_speaking_partial_scatter.png",
+  width = 12,
+  height = 7
+)
+
+save_objects(
+  c(
+    "stex_pair_aggregated",
+    "stex_pair_aggregated_raw_cor",
+    "stex_pair_aggregated_partial_cor",
+    "stex_pair_aggregated_raw_reg",
+    "stex_pair_aggregated_baseline_reg",
+    "stex_pair_aggregated_baseline_fits",
+    "stex_pair_speaking_raw_plot_data",
+    "stex_pair_speaking_partial_plot_data",
+    "p_stex_pair_speaking_raw",
+    "p_stex_pair_speaking_partial"
+  ),
+  "06_stex_pair_aggregated_artifacts.RData"
+)
+
 # final save and console summary
 
 save.image(file = file.path(out_dir, "rdata", "99_analysis_workspace.RData"), compress = "xz")
@@ -1397,6 +1952,14 @@ cat("  - 11_toefl_best_single_distance_terms.csv\n")
 cat("  - 12_stex_best_single_distance_terms.csv\n")
 cat("  - 13_toefl_best_predictive_models.csv\n")
 cat("  - 14_stex_best_predictive_models.csv\n")
+cat("  - 15_stex_pair_aggregated_raw_correlations.csv\n")
+cat("  - 16_stex_pair_aggregated_partial_correlations.csv\n")
+cat("  - 17_stex_pair_aggregated_raw_regressions.csv\n")
+cat("  - 18_stex_pair_aggregated_baseline_regressions.csv\n")
+cat("  - 19_stex_pair_aggregated_baseline_fit_stats.csv\n")
+cat("  - 20_stex_pair_speaking_raw_plot_data.csv\n")
+cat("  - 20a_stex_pair_speaking_partial_plot_data.csv\n")
 cat("  - rdata/00_filter_artifacts.RData\n")
 cat("  - rdata/00b_dropped_row_artifacts.RData\n")
+cat("  - rdata/06_stex_pair_aggregated_artifacts.RData\n")
 cat("  - rdata/99_analysis_workspace.RData\n")

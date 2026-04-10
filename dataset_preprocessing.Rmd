@@ -386,6 +386,47 @@ stex.augmented[l2_dutch, on = .(L2_code), `:=`(
 ```
 
 
+```{r}
+fwrite(stex.augmented, "data/stex_with_uriel_distances_edit.csv")
+
+```
 
 
+```{r}
+
+stex.new <- read.csv("data/stex_with_uriel_distances.csv")
+setDT(stex.new)
+
+```
+
+
+```{r}
+
+cols_to_suffix <- c(
+  "island_dist",
+  "speaker_dist",
+  "hyperbolic_dist",
+  "l2v_genetic_dist",
+  "l2v_geographic_dist",
+  "l2v_syntactic_dist",
+  "l2v_inventory_dist",
+  "l2v_phonological_dist",
+  "l2v_featural_dist",
+  "asjp_dist"
+)
+
+new_names <- paste0(cols_to_suffix, "_l1dutch")
+data.table::setnames(stex.new, old = cols_to_suffix, new = new_names)
+
+stex.augmented[, (intersect(names(stex.augmented), new_names)) := NULL]
+stex.augmented[, (new_names) := stex.new[, ..new_names]]
+
+```
+
+
+```{r}
+
+fwrite(stex.augmented, "data/stex_with_uriel_distances.csv")
+
+```
 

@@ -205,6 +205,7 @@ script_lookup <- make_vector_lookup(script_dt, setdiff(names(script_dt), "lang")
 
 ```
 
+# Old Preprocessing (This is mistaken/incomplete for stex)
 
 ```{r}
 
@@ -299,5 +300,92 @@ TODO:
 - Probably do the above only for stex
 - For toefl and stex, download [ASJP](https://asjp.clld.org/) so we can use their distances as a competitor
 - I thought about including walks/phoible based distances, but could get away with not, since they are included in uriel
+
+
+# Extra Preprocessing
+
+```{r}
+
+stex.augmented <- read.csv("data/stex_with_uriel_distances.csv")
+setDT(stex.augmented)
+
+```
+
+
+```{r}
+
+dist_cols <- grep("(_dist$)|(^hyperbolic_dist$)", names(stex.augmented), value = TRUE)
+
+setnames(
+  stex.augmented,
+  old = dist_cols,
+  new = paste0(dist_cols, "_l1l2")
+)
+
+setnames(
+  stex.augmented,
+  old = c("morph", "lex", "new_feat", "new_sounds"),
+  new = c("Morph_Score", "Lex_Score", "New_Feature_Score", "New_Sound_Score")
+)
+
+```
+
+
+```{r}
+
+dutch_code <- "dutc1256"
+
+l1_dutch <- unique(
+  stex.augmented[, .(L1_code)]
+)
+
+l1_dutch[, featural_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, feat_lookup)]
+l1_dutch[, script_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, script_lookup)]
+l1_dutch[, geographic_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, geo_lookup)]
+l1_dutch[, genetic_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, gen_lookup)]
+l1_dutch[, syntactic_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, syn_lookup)]
+l1_dutch[, morphological_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, morph_lookup)]
+l1_dutch[, phonological_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, phon_lookup)]
+l1_dutch[, inventory_dist_l1dutch := pair_distance_vec(L1_code, dutch_code, inv_lookup)]
+
+l2_dutch <- unique(
+  stex.augmented[, .(L2_code)]
+)
+
+l2_dutch[, featural_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, feat_lookup)]
+l2_dutch[, script_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, script_lookup)]
+l2_dutch[, geographic_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, geo_lookup)]
+l2_dutch[, genetic_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, gen_lookup)]
+l2_dutch[, syntactic_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, syn_lookup)]
+l2_dutch[, morphological_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, morph_lookup)]
+l2_dutch[, phonological_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, phon_lookup)]
+l2_dutch[, inventory_dist_l2dutch := pair_distance_vec(L2_code, dutch_code, inv_lookup)]
+
+stex.augmented[l1_dutch, on = .(L1_code), `:=`(
+  featural_dist_l1dutch = i.featural_dist_l1dutch,
+  script_dist_l1dutch = i.script_dist_l1dutch,
+  geographic_dist_l1dutch = i.geographic_dist_l1dutch,
+  genetic_dist_l1dutch = i.genetic_dist_l1dutch,
+  syntactic_dist_l1dutch = i.syntactic_dist_l1dutch,
+  morphological_dist_l1dutch = i.morphological_dist_l1dutch,
+  phonological_dist_l1dutch = i.phonological_dist_l1dutch,
+  inventory_dist_l1dutch = i.inventory_dist_l1dutch
+)]
+
+stex.augmented[l2_dutch, on = .(L2_code), `:=`(
+  featural_dist_l2dutch = i.featural_dist_l2dutch,
+  script_dist_l2dutch = i.script_dist_l2dutch,
+  geographic_dist_l2dutch = i.geographic_dist_l2dutch,
+  genetic_dist_l2dutch = i.genetic_dist_l2dutch,
+  syntactic_dist_l2dutch = i.syntactic_dist_l2dutch,
+  morphological_dist_l2dutch = i.morphological_dist_l2dutch,
+  phonological_dist_l2dutch = i.phonological_dist_l2dutch,
+  inventory_dist_l2dutch = i.inventory_dist_l2dutch
+)]
+
+```
+
+
+
 
 

@@ -8,6 +8,7 @@ output: pdf_document
 ```{r}
 
 library(data.table)
+library(countrycode)
 
 ```
 
@@ -429,4 +430,297 @@ stex.augmented[, (new_names) := stex.new[, ..new_names]]
 fwrite(stex.augmented, "data/stex_with_uriel_distances.csv")
 
 ```
+
+
+# Add in other WDI/HDI covariates
+
+```{r}
+
+toefl.augmented <- read.csv("data/toefl_with_uriel_distances.csv")
+stex.augmented <- read.csv("data/stex_with_uriel_distances.csv")
+setDT(toefl.augmented)
+setDT(stex.augmented)
+
+```
+
+
+```{r}
+
+hdi <- read.csv("data/human-development-index/human-development-index.csv")
+setDT(hdi)
+wdi <- read.csv("data/wdi/wdi_data.csv")
+setDT(wdi)
+
+```
+
+```{r}
+
+country_map <- data.table(C = unique(stex.augmented$C))
+
+country_map[, C_pretty := {
+  y <- as.character(C)
+  y <- gsub("([a-z])([A-Z])", "\\1 \\2", y, perl = TRUE)
+  y <- gsub(",", ", ", y)
+  y <- gsub("\\s+", " ", y)
+  trimws(y)
+}]
+
+manual_iso <- c(
+  "Congo,Republic" = "COG",
+  "Congo,DemocraticRepublicofthe" = "COD",
+  "Coted'Ivoire" = "CIV",
+  "Korea,South" = "KOR",
+  "CzechRepublic" = "CZE",
+  "Turkey" = "TUR",
+  "Syria" = "SYR",
+  "Iran" = "IRN",
+  "Egypt" = "EGY",
+  "Russia" = "RUS",
+  "Vietnam" = "VNM",
+  "Venezuela" = "VEN",
+  "Slovakia" = "SVK",
+  "HongKong" = "HKG",
+  "CapeVerde" = "CPV",
+  "BosniaandHerzegovina" = "BIH",
+  "SerbiaandMontenegro" = NA_character_,
+  "Yugoslavia" = NA_character_,
+  "USSR" = NA_character_,
+  "Czechslowakia" = NA_character_
+)
+
+country_map[, iso3 := countrycode(
+  C_pretty,
+  origin = "country.name",
+  destination = "iso3c",
+  warn = FALSE
+)]
+
+
+```
+
+
+```{r}
+
+# most recent as of the pub date of stex data, which is 2019
+# fallback is nearest post-2019
+as_of_year <- 2019L
+
+hdi_latest <- hdi[
+  !is.na(Code) &
+    Code != "" &
+    !is.na(Human.Development.Index),
+  {
+    pre_idx <- which(Year <= as_of_year)
+
+    if (length(pre_idx) > 0L) {
+      .SD[pre_idx[which.max(Year[pre_idx])]]
+    } else {
+      post_idx <- which(Year > as_of_year)
+      .SD[post_idx[which.min(Year[post_idx])]]
+    }
+  },
+  by = Code
+]
+
+hdi_latest <- hdi_latest[
+  ,
+  .(
+    iso3 = Code,
+    hdi_entity = Entity,
+    hdi_year = Year,
+    hdi_timing = fifelse(
+      Year <= as_of_year,
+      "latest_available_at_or_before_2019",
+      "fallback_closest_after_2019"
+    ),
+    hdi = Human.Development.Index,
+    hdi_region = World.region.according.to.OWID
+  )
+]
+
+```
+
+
+```{r}
+
+year_cols <- grep("^X[0-9]{4}", names(wdi), value = TRUE)
+
+wdi_clean <- wdi[
+  !is.na(Country.Code) &
+    Country.Code != "" &
+    !is.na(Series.Name) &
+    Series.Name != "" &
+    nchar(Country.Code) == 3
+]
+
+wdi_long <- melt(
+  wdi_clean,
+  id.vars = c("Country.Name", "Country.Code", "Series.Name", "Series.Code"),
+  measure.vars = year_cols,
+  variable.name = "year_col",
+  value.name = "value_raw",
+  variable.factor = FALSE
+)
+
+wdi_long[, year := as.integer(sub("^X([0-9]{4}).*$", "\\1", year_col))]
+
+wdi_long[
+  value_raw %chin% c("..", "", NA_character_),
+  value_raw := NA_character_
+]
+
+wdi_long[, value := suppressWarnings(as.numeric(value_raw))]
+
+as_of_year <- 2019L
+
+wdi_latest <- wdi_long[
+  !is.na(value),
+  {
+    pre_idx <- which(year <= as_of_year)
+
+    if (length(pre_idx) > 0L) {
+      .SD[pre_idx[which.max(year[pre_idx])]]
+    } else {
+      post_idx <- which(year > as_of_year)
+      .SD[post_idx[which.min(year[post_idx])]]
+    }
+  },
+  by = .(Country.Code, Country.Name, Series.Name, Series.Code)
+]
+
+wdi_latest[
+  ,
+  timing := fifelse(
+    year <= as_of_year,
+    "latest_available_at_or_before_2019",
+    "fallback_closest_after_2019"
+  )
+]
+
+```
+
+
+```{r}
+
+wdi_name_map <- c(
+  "Individuals using the Internet (% of population)" =
+    "wdi_internet_pct",
+
+  "GDP per capita, PPP (constant 2021 international $)" =
+    "wdi_gdp_pc_ppp_const2021",
+
+  "School enrollment, tertiary (% gross)" =
+    "wdi_tertiary_enrollment_pct",
+
+  "School enrollment, tertiary, female (% gross)" =
+    "wdi_tertiary_enrollment_female_pct",
+
+  "School enrollment, tertiary, male (% gross)" =
+    "wdi_tertiary_enrollment_male_pct",
+
+  "Government expenditure on education, total (% of GDP)" =
+    "wdi_gov_education_expenditure_pct_gdp",
+
+  "Literacy rate, adult total (% of people ages 15 and above)" =
+    "wdi_adult_literacy_pct",
+
+  "Urban population (% of total population)" =
+    "wdi_urban_population_pct"
+)
+
+wdi_latest[, feature := unname(wdi_name_map[Series.Name])]
+
+wdi_latest[
+  is.na(feature),
+  feature := paste0("wdi_", make.names(Series.Code))
+]
+
+wdi_latest[, feature_year := paste0(feature, "_year")]
+wdi_latest[, feature_timing := paste0(feature, "_timing")]
+```
+
+
+```{r}
+
+wdi_values_wide <- dcast(
+  wdi_latest,
+  Country.Code + Country.Name ~ feature,
+  value.var = "value"
+)
+
+wdi_years_wide <- dcast(
+  wdi_latest,
+  Country.Code + Country.Name ~ feature_year,
+  value.var = "year"
+)
+
+wdi_timing_wide <- dcast(
+  wdi_latest,
+  Country.Code + Country.Name ~ feature_timing,
+  value.var = "timing"
+)
+
+wdi_country_features <- Reduce(
+  function(x, y) merge(x, y, by = c("Country.Code", "Country.Name"), all = TRUE),
+  list(wdi_values_wide, wdi_years_wide, wdi_timing_wide)
+)
+
+setnames(
+  wdi_country_features,
+  old = c("Country.Code", "Country.Name"),
+  new = c("iso3", "wdi_country_name")
+)
+
+```
+
+
+```{r}
+
+
+country_features <- merge(
+  country_map,
+  hdi_latest,
+  by = "iso3",
+  all.x = TRUE
+)
+
+country_features <- merge(
+  country_features,
+  wdi_country_features,
+  by = "iso3",
+  all.x = TRUE
+)
+
+```
+
+
+```{r}
+
+stex_augmented_hdi_wdi <- copy(stex.augmented)
+stex_augmented_hdi_wdi[, row_id__ := .I]
+
+stex_augmented_hdi_wdi <- merge(
+  stex_augmented_hdi_wdi,
+  country_features,
+  by = "C",
+  all.x = TRUE,
+  sort = FALSE
+)
+
+setorder(stex_augmented_hdi_wdi, row_id__)
+stex_augmented_hdi_wdi[, row_id__ := NULL]
+
+stopifnot(nrow(stex_augmented_hdi_wdi) == nrow(stex.augmented))
+
+```
+
+
+```{r}
+
+fwrite(stex_augmented_hdi_wdi, "data/stex_with_indicators.csv")
+
+```
+
+
+
 

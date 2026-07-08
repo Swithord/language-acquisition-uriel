@@ -13,22 +13,92 @@ def available_columns(df: pd.DataFrame, columns: Sequence[str]) -> list[str]:
     return [col for col in columns if col in df.columns]
 
 
+def unique_preserve_order(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+
+    return out
+
+
+def family_lookup(
+    families: Mapping[str, Sequence[str]] | None,
+) -> dict[str, str]:
+    if families is None:
+        return {}
+
+    lookup: dict[str, str] = {}
+
+    for family, cols in families.items():
+        for col in cols:
+            lookup[col] = family
+
+    return lookup
+
+
+def columns_ordered_by_family(
+    columns: Sequence[str],
+    families: Mapping[str, Sequence[str]] | None,
+) -> list[str]:
+    columns = unique_preserve_order(list(columns))
+
+    if families is None:
+        return columns
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for _, family_cols in families.items():
+        for col in family_cols:
+            if col in columns and col not in seen:
+                ordered.append(col)
+                seen.add(col)
+
+    for col in columns:
+        if col not in seen:
+            ordered.append(col)
+            seen.add(col)
+
+    return ordered
+
+
+def family_boundaries(
+    ordered_columns: Sequence[str],
+    families: Mapping[str, Sequence[str]] | None,
+) -> list[int]:
+    if families is None:
+        return []
+
+    lookup = family_lookup(families)
+    boundaries: list[int] = []
+
+    previous_family: str | None = None
+
+    for idx, col in enumerate(ordered_columns):
+        current_family = lookup.get(col, "other")
+
+        if previous_family is not None and current_family != previous_family:
+            boundaries.append(idx)
+
+        previous_family = current_family
+
+    return boundaries
+
+
 def available_distance_columns(
     df: pd.DataFrame,
     families: Mapping[str, Sequence[str]],
 ) -> list[str]:
     cols: list[str] = []
+
     for family_cols in families.values():
         cols.extend([col for col in family_cols if col in df.columns])
 
-    seen = set()
-    unique_cols = []
-    for col in cols:
-        if col not in seen:
-            unique_cols.append(col)
-            seen.add(col)
-
-    return unique_cols
+    return unique_preserve_order(cols)
 
 
 def zscore(series: pd.Series) -> pd.Series:
@@ -98,7 +168,8 @@ def block_pca_scores(
     cols = [
         col
         for col in columns
-        if col in df.columns and pd.to_numeric(df[col], errors="coerce").notna().sum() >= min_nonmissing
+        if col in df.columns
+        and pd.to_numeric(df[col], errors="coerce").notna().sum() >= min_nonmissing
     ]
 
     if not cols:

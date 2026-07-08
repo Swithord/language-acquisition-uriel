@@ -4,8 +4,8 @@ This repository studies what language similarity measures capture when evaluated
 
 The central distinction is between:
 
-* **language similarity as a construct**, meaning a latent notion of how similar or distant two languages are;
-* **language similarity measures as operationalisations**, meaning concrete functions that return numeric distance scores.
+- **language similarity as a construct**, meaning a latent notion of how similar or distant two languages are;
+- **language similarity measures as operationalisations**, meaning concrete functions that return numeric distance scores.
 
 The project asks whether commonly used distance measures can support claims about the underlying construct, or whether they should be interpreted more narrowly as task-specific predictive features.
 
@@ -29,9 +29,9 @@ For each distance family, we ask whether measures that claim to represent the sa
 
 Examples:
 
-* Do typological measures agree with other typological measures?
-* Do genetic measures agree with other genetic measures?
-* Does speaker-distribution geographic distance behave like URIEL or lang2vec geographic distance?
+- Do typological measures agree with other typological measures?
+- Do genetic measures agree with other genetic measures?
+- Does speaker-distribution geographic distance behave like URIEL or lang2vec geographic distance?
 
 This is tested using within-family rank correlations and principal-component summaries.
 
@@ -45,7 +45,12 @@ larger distance → lower speaking score.
 
 This is evaluated using standardised regression models, separately and jointly across distance families.
 
-The core analysis is run in an apples-to-apples way across TOEFL and STEX using only the shared base columns.
+The core analysis is run in an apples-to-apples way across TOEFL and STEX using only the shared base columns. The two datasets are fixed-target acquisition settings:
+
+- TOEFL measures native-language-to-English acquisition outcomes.
+- STEX measures native-language-to-Dutch acquisition outcomes.
+
+This means that the pooled comparison tests whether distance effects replicate across two fixed-target settings. It does not identify a separate target-language effect, because dataset and target are perfectly aligned.
 
 ### 3. Are language distances useful for held-out prediction?
 
@@ -55,21 +60,21 @@ We evaluate whether distance measures improve prediction of held-out language-pa
 
 The main comparison is between:
 
-* a mean baseline;
-* the best single distance measure selected inside each training fold;
-* modality-level distance summaries;
-* all distance measures in a regularised regression model.
+- a mean baseline;
+- the best single distance measure selected inside each training fold;
+- modality-level distance summaries;
+- all distance measures in a regularised regression model.
 
 ### 4. Are distance effects robust to confounding?
 
 For STEX only, we use extended learner and country-level covariates to test whether distance effects persist after adjustment.
 
-This analysis asks whether language distance contributes information beyond:
+This analysis asks whether native-to-Dutch distance contributes information beyond:
 
-* learner background;
-* country-level opportunity variables;
-* auxiliary-language background;
-* native-auxiliary and auxiliary-target distances.
+- learner background;
+- country-level opportunity variables;
+- auxiliary-language background;
+- native-auxiliary and auxiliary-Dutch distances.
 
 If distance effects attenuate strongly after adjustment, then the measure may be predictive mainly because it proxies for exposure, geography, educational opportunity, or auxiliary-language knowledge.
 
@@ -79,37 +84,43 @@ The repository assumes three input files.
 
 ### `data/toefl_base.csv`
 
-TOEFL speaking-score data with one row per observation.
+TOEFL speaking-score data.
+
+The target language is always English.
 
 Main columns:
 
-* `dataset`
-* `observation`
-* `native_language`
-* `native_code`
-* `target_language`
-* `target_code`
-* `speaking_score`
-* shared language distance columns
+- `dataset`
+- `observation`
+- `native_language`
+- `native_code`
+- `target_language`
+- `target_code`
+- `speaking_score`
+- shared language distance columns
 
-The TOEFL target language is English.
+In the core analysis, TOEFL is interpreted as native-language-to-English acquisition.
 
 ### `data/stex_base.csv`
 
 STEX speaking-score data with the same core columns as TOEFL.
 
+The target language is always Dutch.
+
 Main columns:
 
-* `dataset`
-* `observation`
-* `native_language`
-* `native_code`
-* `target_language`
-* `target_code`
-* `speaking_score`
-* shared language distance columns
+- `dataset`
+- `observation`
+- `native_language`
+- `native_code`
+- `target_language`
+- `target_code`
+- `speaking_score`
+- shared language distance columns
 
-STEX may contain repeated individual observations for the same native-target language pair. The core analysis aggregates STEX to the language-pair level before fitting language-distance models.
+STEX contains repeated individual observations for the same native-to-Dutch language pair. The core analysis aggregates STEX to the native-to-Dutch language-pair level before fitting language-distance models.
+
+This avoids treating repeated learner rows with identical language-distance values as independent evidence about distance effects.
 
 ### `data/stex_extended.csv`
 
@@ -119,21 +130,27 @@ This file is merged to `stex_base.csv` by `observation`.
 
 It contains learner-level, country-level, and auxiliary-language variables, including:
 
-* `age_at_arrival`
-* `residence_length`
-* `target_education_days`
-* `sex`
-* `country`
-* `country_code`
-* `hdi`
-* `gdp_per_capita`
-* `adult_literacy`
-* `internet_use`
-* `education_expenditure`
-* `tertiary_enrolment`
-* `auxiliary_language`
-* `auxiliary_target_distance_*`
-* `native_auxiliary_distance_*`
+- `age_at_arrival`
+- `residence_length`
+- `target_education_days`
+- `sex`
+- `country`
+- `country_code`
+- `hdi`
+- `gdp_per_capita`
+- `adult_literacy`
+- `internet_use`
+- `education_expenditure`
+- `tertiary_enrolment`
+- `auxiliary_language`
+- `auxiliary_target_distance_*`
+- `native_auxiliary_distance_*`
+
+Because the STEX target is always Dutch:
+
+- `auxiliary_target_distance_*` means auxiliary-language-to-Dutch distance;
+- base STEX distance columns mean native-language-to-Dutch distance;
+- the extended analysis studies whether native-to-Dutch distance survives adjustment for learner, country, and auxiliary-language structure.
 
 These columns are used only in the STEX extended analysis.
 
@@ -143,51 +160,72 @@ The core distance columns are grouped into pre-specified modality families.
 
 ### Lexical
 
-* `asjp_lexical`
-* `concepts_lexical`
+- `asjp_lexical`
+- `concepts_lexical`
 
 ### Genetic
 
-* `glottolog_genetic`
-* `l2v_genetic`
-* `urielplus_genetic`
-* `modality_hyperbolic`
+- `glottolog_genetic`
+- `l2v_genetic`
+- `urielplus_genetic`
+- `modality_hyperbolic`
 
 `modality_hyperbolic` is treated as a genetic distance.
 
 ### Geographic
 
-* `l2v_geographic`
-* `urielplus_geographic`
-* `modality_speaker`
+- `l2v_geographic`
+- `urielplus_geographic`
+- `modality_speaker`
 
 `modality_speaker` is treated as a geographic distance.
 
 ### Typological / structural
 
-* `grambank_typological`
-* `qwals_typological`
-* `l2v_featural`
-* `l2v_syntactic`
-* `urielplus_featural`
-* `urielplus_syntactic`
-* `urielplus_morphological`
-* `modality_island`
+- `grambank_typological`
+- `qwals_typological`
+- `l2v_featural`
+- `l2v_syntactic`
+- `urielplus_featural`
+- `urielplus_syntactic`
+- `urielplus_morphological`
+- `modality_island`
 
 `modality_island` is treated as a typological or structural distance.
 
 ### Phonological / inventory
 
-* `l2v_inventory`
-* `l2v_phonological`
-* `phoible_phonological`
-* `urielplus_inventory`
-* `urielplus_phonological`
+- `l2v_inventory`
+- `l2v_phonological`
+- `phoible_phonological`
+- `urielplus_inventory`
+- `urielplus_phonological`
 
 ### Script
 
-* `scripts_script`
-* `urielplus_script`
+- `scripts_script`
+- `urielplus_script`
+
+## Target-language structure
+
+The two core datasets are both fixed-target datasets:
+
+| Dataset | Target language | Interpretation |
+|---|---|---|
+| TOEFL | English | native-to-English speaking outcomes |
+| STEX | Dutch | native-to-Dutch speaking outcomes |
+
+This matters for interpretation.
+
+The pooled base analysis includes a dataset fixed effect. This adjusts for mean differences between TOEFL and STEX. However, because target language is fixed within each dataset, the dataset effect also absorbs the target-language contrast. The analysis therefore cannot separate a TOEFL-versus-STEX effect from an English-versus-Dutch target effect.
+
+The correct interpretation is:
+
+> The core analysis tests whether language-distance effects are coherent across two fixed-target acquisition settings: native-to-English TOEFL and native-to-Dutch STEX.
+
+The incorrect interpretation is:
+
+> The core analysis estimates target-language-independent distance effects across arbitrary target languages.
 
 ## Repository structure
 
@@ -226,13 +264,13 @@ The core distance columns are grouped into pre-specified modality families.
             ├── io.py
             ├── preprocess.py
             └── stats.py
-```
+````
 
 ## Core analysis
 
 The core analysis is run by `main.py`.
 
-It uses only the shared base columns in `toefl_base.csv` and `stex_base.csv`. This allows an apples-to-apples comparison between TOEFL and STEX.
+It uses only the shared base columns in `toefl_base.csv` and `stex_base.csv`.
 
 The core analysis performs:
 
@@ -243,7 +281,9 @@ The core analysis performs:
 5. modality-level inferential models;
 6. grouped predictive evaluation.
 
-By default, repeated native-target observations are aggregated to the language-pair level. This is important because language distance values are pair-level quantities. Treating repeated STEX rows as independent would inflate precision.
+By default, repeated native-target observations are aggregated to the language-pair level. For STEX, because the target is always Dutch, this is equivalent to aggregating to native-language-to-Dutch means.
+
+Grouped cross-validation is also performed by language pair. For STEX, this means held-out native-to-Dutch pairs.
 
 ### Core outputs
 
@@ -283,7 +323,7 @@ It is STEX-specific and uses both:
 * `data/stex_base.csv`
 * `data/stex_extended.csv`
 
-The purpose is to test whether language-distance effects remain after adjustment for learner, country, and auxiliary-language covariates.
+The purpose is to test whether native-to-Dutch language-distance effects remain after adjustment for learner, country, and auxiliary-language covariates.
 
 The extended analysis performs:
 
@@ -307,7 +347,7 @@ artifacts/stex_extended/
 
 The most important files are:
 
-* `distance_effect_attenuation.csv`: how much distance effects change after confounder adjustment;
+* `distance_effect_attenuation.csv`: how much native-to-Dutch distance effects change after confounder adjustment;
 * `predictive_summary.csv`: whether distances improve prediction beyond confounders.
 
 ## Installation

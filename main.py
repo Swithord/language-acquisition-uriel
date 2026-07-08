@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from langsim.config import DISTANCE_FAMILIES, OUTCOME_COL
 from langsim.dataloader.core import prepare_core_data
-from langsim.evaluate.plotting import (
-    plot_distance_correlation_heatmap,
-    plot_prediction_summary,
-    plot_single_effects_forest,
-)
+from langsim.evaluate.plotting import make_core_plots
 from langsim.fitting.agreement import coverage_table, run_agreement_analysis
 from langsim.fitting.inference import (
     run_family_joint_effects,
@@ -86,10 +83,116 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--make_plots",
         action="store_true",
-        help="Write diagnostic plots.",
+        help="Write plots.",
     )
 
     return parser.parse_args()
+
+
+def _targets_by_dataset(
+    df,
+    dataset_col: str,
+    target_col: str,
+) -> dict[str, list[str]]:
+    if dataset_col not in df.columns or target_col not in df.columns:
+        return {}
+
+    targets: dict[str, list[str]] = {}
+
+    for dataset, sub in df.groupby(dataset_col, dropna=False):
+        values = (
+            sub[target_col]
+            .dropna()
+            .astype(str)
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+        targets[str(dataset)] = values
+
+    return targets
+
+
+def _n_pairs_by_dataset(
+    df,
+    dataset_col: str,
+) -> dict[str, int]:
+    if dataset_col not in df.columns or "pair_id" not in df.columns:
+        return {}
+
+    counts: dict[str, int] = {}
+
+    for dataset, sub in df.groupby(dataset_col, dropna=False):
+        counts[str(dataset)] = int(sub["pair_id"].nunique())
+
+    return counts
+
+
+def _n_rows_by_dataset(
+    df,
+    dataset_col: str,
+) -> dict[str, int]:
+    if dataset_col not in df.columns:
+        return {}
+
+    return {
+        str(dataset): int(sub.shape[0])
+        for dataset, sub in df.groupby(dataset_col, dropna=False)
+    }
+
+
+def _n_original_observations_by_dataset(
+    df,
+    dataset_col: str,
+) -> dict[str, int]:
+    if dataset_col not in df.columns or "n_observations" not in df.columns:
+        return {}
+
+    return {
+        str(dataset): int(sub["n_observations"].sum())
+        for dataset, sub in df.groupby(dataset_col, dropna=False)
+    }
+
+
+def _make_metadata(
+    args: argparse.Namespace,
+    df,
+    outdir: Path,
+    distance_cols: list[str],
+) -> dict[str, Any]:
+    return {
+        "csv": args.csv,
+        "outdir": str(outdir),
+        "outcome_col": args.outcome_col,
+        "dataset_col": args.dataset_col,
+        "native_col": args.native_col,
+        "target_col": args.target_col,
+        "aggregate_pairs": args.aggregate_pairs,
+        "n_rows": int(df.shape[0]),
+        "n_rows_by_dataset": _n_rows_by_dataset(
+            df=df,
+            dataset_col=args.dataset_col,
+        ),
+        "n_pairs": int(df["pair_id"].nunique()) if "pair_id" in df.columns else None,
+        "n_pairs_by_dataset": _n_pairs_by_dataset(
+            df=df,
+            dataset_col=args.dataset_col,
+        ),
+        "n_original_observations_by_dataset": _n_original_observations_by_dataset(
+            df=df,
+            dataset_col=args.dataset_col,
+        ),
+        "targets_by_dataset": _targets_by_dataset(
+            df=df,
+            dataset_col=args.dataset_col,
+            target_col=args.target_col,
+        ),
+        "distance_columns": distance_cols,
+        "distance_families": {
+            family: [col for col in cols if col in df.columns]
+            for family, cols in DISTANCE_FAMILIES.items()
+        },
+    }
 
 
 def main() -> None:
@@ -113,21 +216,12 @@ def main() -> None:
 
     write_csv(df, outdir / "analysis_data.csv")
 
-    metadata = {
-        "csv": args.csv,
-        "outdir": str(outdir),
-        "outcome_col": args.outcome_col,
-        "dataset_col": args.dataset_col,
-        "native_col": args.native_col,
-        "target_col": args.target_col,
-        "aggregate_pairs": args.aggregate_pairs,
-        "n_rows": int(df.shape[0]),
-        "distance_columns": distance_cols,
-        "distance_families": {
-            family: [col for col in cols if col in df.columns]
-            for family, cols in DISTANCE_FAMILIES.items()
-        },
-    }
+    metadata = _make_metadata(
+        args=args,
+        df=df,
+        outdir=outdir,
+        distance_cols=distance_cols,
+    )
     write_json(metadata, outdir / "metadata.json")
 
     coverage = coverage_table(
@@ -184,18 +278,18 @@ def main() -> None:
         plot_dir = outdir / "plots"
         ensure_dir(plot_dir)
 
-        plot_distance_correlation_heatmap(
+        make_core_plots(
             df=df,
             distance_cols=distance_cols,
-            outpath=plot_dir / "distance_spearman_heatmap.png",
-        )
-        plot_single_effects_forest(
-            effects=single_effects,
-            outpath=plot_dir / "single_effects_forest.png",
-        )
-        plot_prediction_summary(
-            summary=predictive_summary,
-            outpath=plot_dir / "predictive_summary.png",
+            single_effects=single_effects,
+            family_effects=family_effects,
+            modality_effects=modality_effects,
+            predictive_summary=predictive_summary,
+            predictive_per_fold=per_fold,
+            outdir=plot_dir,
+            dataset_col=args.dataset_col,
+            families=DISTANCE_FAMILIES,
+            agreement=agreement,
         )
 
     print(f"Finished core analysis. Outputs written to {outdir}")

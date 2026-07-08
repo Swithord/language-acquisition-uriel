@@ -69,9 +69,30 @@
       "modality_island"
     ]
   },
+  "n_original_observations_by_dataset": {
+    "stex": 50235,
+    "toefl": 107
+  },
+  "n_pairs": 177,
+  "n_pairs_by_dataset": {
+    "stex": 70,
+    "toefl": 107
+  },
   "n_rows": 177,
+  "n_rows_by_dataset": {
+    "stex": 70,
+    "toefl": 107
+  },
   "native_col": "native_code",
   "outcome_col": "speaking_score",
   "outdir": "artifacts/core",
-  "target_col": "target_code"
+  "target_col": "target_code",
+  "targets_by_dataset": {
+    "stex": [
+      "dutc1256"
+    ],
+    "toefl": [
+      "stan1293"
+    ]
+  }
 }

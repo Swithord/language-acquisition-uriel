@@ -1,0 +1,12 @@
+PWD: /project/6102153/khanadi7/language-acquisition-uriel
+HOST: c218.nibi.sharcnet
+which python: /project/6102153/khanadi7/language-acquisition-uriel/venv/bin/python
+Python 3.11.4
+numpy ok
+pandas ok
+scipy ok
+sklearn ok
+statsmodels ok
+Finished STEX extended analysis. Outputs written to artifacts/stex_extended
+Finished STEX extended analysis.
+Outputs written to artifacts/stex_extended

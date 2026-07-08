@@ -1,0 +1,77 @@
+{
+  "aggregate_pairs": true,
+  "csv": [
+    "data/toefl_base.csv",
+    "data/stex_base.csv"
+  ],
+  "dataset_col": "dataset",
+  "distance_columns": [
+    "asjp_lexical",
+    "concepts_lexical",
+    "glottolog_genetic",
+    "l2v_genetic",
+    "urielplus_genetic",
+    "modality_hyperbolic",
+    "l2v_geographic",
+    "urielplus_geographic",
+    "modality_speaker",
+    "grambank_typological",
+    "qwals_typological",
+    "l2v_featural",
+    "l2v_syntactic",
+    "urielplus_featural",
+    "urielplus_syntactic",
+    "urielplus_morphological",
+    "modality_island",
+    "l2v_inventory",
+    "l2v_phonological",
+    "phoible_phonological",
+    "urielplus_inventory",
+    "urielplus_phonological",
+    "scripts_script",
+    "urielplus_script"
+  ],
+  "distance_families": {
+    "genetic": [
+      "glottolog_genetic",
+      "l2v_genetic",
+      "urielplus_genetic",
+      "modality_hyperbolic"
+    ],
+    "geographic": [
+      "l2v_geographic",
+      "urielplus_geographic",
+      "modality_speaker"
+    ],
+    "lexical": [
+      "asjp_lexical",
+      "concepts_lexical"
+    ],
+    "phonological_inventory": [
+      "l2v_inventory",
+      "l2v_phonological",
+      "phoible_phonological",
+      "urielplus_inventory",
+      "urielplus_phonological"
+    ],
+    "script": [
+      "scripts_script",
+      "urielplus_script"
+    ],
+    "typological_structural": [
+      "grambank_typological",
+      "qwals_typological",
+      "l2v_featural",
+      "l2v_syntactic",
+      "urielplus_featural",
+      "urielplus_syntactic",
+      "urielplus_morphological",
+      "modality_island"
+    ]
+  },
+  "n_rows": 177,
+  "native_col": "native_code",
+  "outcome_col": "speaking_score",
+  "outdir": "artifacts/core",
+  "target_col": "target_code"
+}

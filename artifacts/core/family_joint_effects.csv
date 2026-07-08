@@ -1,0 +1,7 @@
+family,n_measures,measures,n,joint_p_value,partial_r2,direction_coherence_negative
+lexical,2,asjp_lexical concepts_lexical,115,5.343660034762477e-07,0.27347143661470186,1.0
+genetic,4,glottolog_genetic l2v_genetic urielplus_genetic modality_hyperbolic,165,1.6033801946728717e-17,0.3191959798802748,0.75
+geographic,3,l2v_geographic urielplus_geographic modality_speaker,172,6.837656984663467e-15,0.26493986068217357,1.0
+typological_structural,8,grambank_typological qwals_typological l2v_featural l2v_syntactic urielplus_featural urielplus_syntactic urielplus_morphological modality_island,114,0.0003091713423843772,0.28928431962860135,0.5
+phonological_inventory,5,l2v_inventory l2v_phonological phoible_phonological urielplus_inventory urielplus_phonological,146,3.1623089017896026e-05,0.15123435018058462,0.8
+script,2,scripts_script urielplus_script,165,0.0002821137273242379,0.06720687364804179,1.0

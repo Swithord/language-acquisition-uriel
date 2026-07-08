@@ -1,2 +1,0 @@
-outcome,term,estimate,std.error,statistic,p.value,conf.low,conf.high,dataset,model_name,model_block,family_name,n,AIC,BIC,p_adj_fdr
-Speaking,Enroll,0.409244804056441,0.112808992592569,3.62776756224129,0.000326831843327767,0.187403591681424,0.631086016431457,stex,z_script_dist,single_distance,gaussian_pair_weighted,536,5232.35075325047,5973.50596311572,0.00402894265544343

@@ -61,6 +61,16 @@ LEARNER_CONFOUNDER_COLS = [
     "new_sound_score",
 ]
 
+CONFOUND_MODE_EXCLUSIONS = {
+    "full": (),
+    "no-mediator": (
+        "lexicon_score",
+        "morphology_score",
+        "new_feature_score",
+        "new_sound_score",
+    ),
+}
+
 COUNTRY_CONFOUNDER_COLS = [
     "hdi",
     "gdp_per_capita",

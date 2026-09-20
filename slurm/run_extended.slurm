@@ -21,6 +21,7 @@ STEX_EXTENDED="${STEX_EXTENDED:-data/stex_extended.csv}"
 OUT_DIR="${OUT_DIR:-artifacts/stex_extended}"
 N_SPLITS="${N_SPLITS:-5}"
 RANDOM_STATE="${RANDOM_STATE:-42}"
+CONFOUND_MODE="${CONFOUND_MODE:-full}"
 
 export PYTHONPATH="$SLURM_SUBMIT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
@@ -62,7 +63,8 @@ python extended.py \
   --stex_extended "$STEX_EXTENDED" \
   --outdir "$OUT_DIR" \
   --n_splits "$N_SPLITS" \
-  --random_state "$RANDOM_STATE"
+  --random_state "$RANDOM_STATE" \
+  --confound_mode "$CONFOUND_MODE"
 
 echo "Finished STEX extended analysis."
 echo "Outputs written to $OUT_DIR"

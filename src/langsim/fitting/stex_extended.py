@@ -9,6 +9,7 @@ import pandas as pd
 from langsim.config import (
     AUXILIARY_TARGET_PREFIX,
     CATEGORICAL_CONFOUNDER_COLS,
+    CONFOUND_MODE_EXCLUSIONS,
     COUNTRY_CONFOUNDER_COLS,
     DISTANCE_FAMILIES,
     LEARNER_CONFOUNDER_COLS,
@@ -33,8 +34,23 @@ def _prefixed_columns(df: pd.DataFrame, prefix: str) -> list[str]:
     return [col for col in df.columns if col.startswith(prefix)]
 
 
-def _make_adjustment_frame(df: pd.DataFrame) -> pd.DataFrame:
-    learner_cols = available_columns(df, LEARNER_CONFOUNDER_COLS)
+def _excluded_confounders(confound_mode: str) -> tuple[str, ...]:
+    if confound_mode not in CONFOUND_MODE_EXCLUSIONS:
+        raise ValueError(
+            f"Unsupported confound_mode: {confound_mode!r}. "
+            f"Choose from {', '.join(CONFOUND_MODE_EXCLUSIONS)}."
+        )
+    return CONFOUND_MODE_EXCLUSIONS[confound_mode]
+
+
+def _make_adjustment_frame(
+    df: pd.DataFrame,
+    confound_mode: str = "full",
+) -> pd.DataFrame:
+    excluded = _excluded_confounders(confound_mode)
+    learner_cols = available_columns(
+        df, [col for col in LEARNER_CONFOUNDER_COLS if col not in excluded]
+    )
     country_cols = available_columns(df, COUNTRY_CONFOUNDER_COLS)
     categorical_cols = available_columns(df, CATEGORICAL_CONFOUNDER_COLS)
 
@@ -170,8 +186,9 @@ def _run_unadjusted_adjusted_effects(
     distance_cols: Sequence[str],
     outcome_col: str,
     cluster_col: str,
+    confound_mode: str = "full",
 ) -> pd.DataFrame:
-    adjustment = _make_adjustment_frame(df)
+    adjustment = _make_adjustment_frame(df, confound_mode=confound_mode)
 
     rows = []
 
@@ -226,8 +243,9 @@ def _extended_predictive_tables(
     group_col: str,
     n_splits: int,
     random_state: int,
+    confound_mode: str = "full",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    adjustment = _make_adjustment_frame(df)
+    adjustment = _make_adjustment_frame(df, confound_mode=confound_mode)
     adjustment_cols = list(adjustment.columns)
 
     pred_df = pd.concat(
@@ -296,7 +314,9 @@ def run_stex_extended_analysis(
     outcome_col: str,
     n_splits: int,
     random_state: int,
+    confound_mode: str = "full",
 ) -> None:
+    excluded = _excluded_confounders(confound_mode)
     outdir = Path(outdir)
 
     df = load_stex_extended(
@@ -315,6 +335,8 @@ def run_stex_extended_analysis(
         "n_rows": int(df.shape[0]),
         "n_pairs": int(df["pair_id"].nunique()),
         "distance_columns": distance_cols,
+        "confound_mode": confound_mode,
+        "excluded_confounder_columns": list(excluded),
     }
     write_json(metadata, outdir / "metadata.json")
     write_csv(df, outdir / "analysis_data.csv")
@@ -324,6 +346,7 @@ def run_stex_extended_analysis(
         distance_cols=distance_cols,
         outcome_col="outcome_z",
         cluster_col="pair_id",
+        confound_mode=confound_mode,
     )
     write_csv(effects, outdir / "distance_effect_attenuation.csv")
 
@@ -334,6 +357,7 @@ def run_stex_extended_analysis(
         group_col="pair_id",
         n_splits=n_splits,
         random_state=random_state,
+        confound_mode=confound_mode,
     )
     write_csv(per_fold, outdir / "predictive_per_fold.csv")
     write_csv(summary, outdir / "predictive_summary.csv")
